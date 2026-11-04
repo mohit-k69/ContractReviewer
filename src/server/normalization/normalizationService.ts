@@ -166,11 +166,14 @@ export async function normalizeContractDocument(
 
 /**
  * Retrieves cached normalized document for the authenticated session.
+ * Verifies document remains registered, session ownership, clean status, eligibility,
+ * and recalculates SHA-256 fingerprint from the physical quarantined file.
  */
 export function getCachedNormalization(
   fileId: string,
   sessionId: string
 ): CachedNormalizationResponse {
+  // 1. Verify session ownership and security report existence
   const { report, authorized } = getSecurityReport(fileId, sessionId);
   if (!authorized) {
     return {
@@ -189,6 +192,50 @@ export function getCachedNormalization(
     };
   }
 
+  // 2. Confirm security status is CLEAN_NO_KNOWN_THREATS
+  if (report.status !== 'CLEAN_NO_KNOWN_THREATS') {
+    normalizationCache.delete(fileId);
+    return {
+      authorized: true,
+      exists: false,
+      error: `Security verification failed: Document status is ${report.status}. Only clean documents are eligible.`,
+    };
+  }
+
+  // 3. Confirm eligibleForContractProcessing is true
+  if (!report.eligibleForContractProcessing) {
+    normalizationCache.delete(fileId);
+    return {
+      authorized: true,
+      exists: false,
+      error: 'Security verification failed: Document is not eligible for contract processing.',
+    };
+  }
+
+  // 4. Retrieve physical quarantined file to recalculate SHA-256 fingerprint
+  const fileFetch = getQuarantinedFileBuffer(fileId, sessionId);
+  if (!fileFetch.buffer) {
+    normalizationCache.delete(fileId);
+    return {
+      authorized: true,
+      exists: false,
+      error: fileFetch.error || 'Quarantined document payload could not be retrieved or is missing.',
+    };
+  }
+
+  const calculatedSha256 = crypto.createHash('sha256').update(fileFetch.buffer).digest('hex');
+
+  // 5. Compare physical file SHA-256 with security report
+  if (calculatedSha256 !== report.metadata.sha256) {
+    normalizationCache.delete(fileId);
+    return {
+      authorized: true,
+      exists: false,
+      error: 'Integrity violation: Physical file SHA-256 does not match verified security report.',
+    };
+  }
+
+  // 6. Check cached normalization
   const normalized = normalizationCache.get(fileId);
   if (!normalized) {
     return {
@@ -198,8 +245,8 @@ export function getCachedNormalization(
     };
   }
 
-  // Verify fingerprint has not been tampered with
-  if (normalized.verified_sha256 !== report.metadata.sha256) {
+  // 7. Verify cached normalization fingerprint matches physical file and report
+  if (normalized.verified_sha256 !== calculatedSha256) {
     normalizationCache.delete(fileId);
     return {
       authorized: true,

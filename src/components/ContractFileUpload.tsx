@@ -656,112 +656,14 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
                           <span>Preamble / Document Elements ({selectedFile.normalizedDocument.unclassified_blocks.length})</span>
                         </div>
                         {selectedFile.normalizedDocument.unclassified_blocks.map((block) => (
-                          <div
-                            key={block.id}
-                            className="p-2 rounded-[8px] bg-white border border-amber-100 text-[11px] text-gray-700"
-                          >
-                            <div className="text-[9px] text-gray-400 font-mono mb-1">{block.id}</div>
-                            <div>{block.text}</div>
-                          </div>
+                          <NormalizedNodeRenderer key={block.id} node={block} />
                         ))}
                       </div>
                     )}
 
-                    {/* Sections and nested clauses */}
+                    {/* Sections and recursive hierarchy */}
                     {selectedFile.normalizedDocument.sections.map((section) => (
-                      <div
-                        key={section.id}
-                        className="p-2.5 rounded-[12px] bg-white border border-[#E5E7EB] flex flex-col gap-2 text-left"
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="font-semibold text-xs text-gray-900 flex items-center gap-1.5">
-                            {section.section_number && (
-                              <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 text-[10px] font-mono font-medium">
-                                {section.section_number}
-                              </span>
-                            )}
-                            <span>{section.title}</span>
-                          </span>
-                          <span className="text-[9px] text-gray-400 font-mono">{section.id}</span>
-                        </div>
-
-                        {/* Section Children: Subsections, Clauses, Paragraphs, Tables, Lists */}
-                        <div className="flex flex-col gap-1.5 pl-2 border-l-2 border-gray-100">
-                          {section.children.map((child: any) => {
-                            if (child.type === 'clause' || child.type === 'subclause') {
-                              return (
-                                <div
-                                  key={child.id}
-                                  className="p-2 rounded-[8px] bg-gray-50/80 border border-gray-200/50 flex flex-col gap-1"
-                                >
-                                  <div className="flex items-center justify-between text-[10px]">
-                                    <span className="font-medium text-gray-900 flex items-center gap-1">
-                                      {child.clause_number && (
-                                        <span className="font-mono text-indigo-700 font-semibold">
-                                          {child.clause_number}
-                                        </span>
-                                      )}
-                                      {child.title && <span>{child.title}</span>}
-                                    </span>
-                                    <span className="text-[9px] text-gray-400 font-mono">{child.id}</span>
-                                  </div>
-                                  <div className="text-[11px] text-gray-700 leading-relaxed">
-                                    {child.text}
-                                  </div>
-                                </div>
-                              );
-                            }
-
-                            if (child.type === 'table') {
-                              return (
-                                <div
-                                  key={child.id}
-                                  className="overflow-x-auto my-1 border border-gray-200 rounded-[8px] bg-white p-1"
-                                >
-                                  <div className="text-[9px] text-gray-400 font-mono px-1 pb-1">
-                                    {child.id} • Table ({child.row_count} rows, {child.col_count} cols)
-                                  </div>
-                                  <table className="min-w-full text-[10px] divide-y divide-gray-200">
-                                    <tbody className="divide-y divide-gray-100">
-                                      {child.table_data?.map((row: string[], rIdx: number) => (
-                                        <tr key={rIdx} className={rIdx === 0 ? 'bg-gray-50 font-medium' : ''}>
-                                          {row.map((cell: string, cIdx: number) => (
-                                            <td key={cIdx} className="px-2 py-1 text-gray-700 whitespace-nowrap">
-                                              {cell}
-                                            </td>
-                                          ))}
-                                        </tr>
-                                      ))}
-                                    </tbody>
-                                  </table>
-                                </div>
-                              );
-                            }
-
-                            if (child.type === 'list') {
-                              return (
-                                <div
-                                  key={child.id}
-                                  className="p-2 rounded-[8px] bg-gray-50/50 border border-gray-100 flex flex-col gap-1"
-                                >
-                                  <div className="text-[9px] text-gray-400 font-mono">{child.id} • List</div>
-                                  {child.items?.map((item: any) => (
-                                    <div key={item.id} className="text-[11px] text-gray-700 pl-1">
-                                      • {item.text.replace(/^[-*•]\s+/, '')}
-                                    </div>
-                                  ))}
-                                </div>
-                              );
-                            }
-
-                            return (
-                              <div key={child.id} className="text-[11px] text-gray-700 py-0.5">
-                                {child.text}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
+                      <NormalizedNodeRenderer key={section.id} node={section} />
                     ))}
                   </div>
                 )}
@@ -848,3 +750,140 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
     </div>
   );
 };
+
+interface NormalizedNodeRendererProps {
+  node: any;
+  depth?: number;
+}
+
+function NormalizedNodeRenderer({ node, depth = 0 }: NormalizedNodeRendererProps) {
+  if (!node) return null;
+
+  if (node.type === 'section' || node.type === 'subsection') {
+    const isSubsection = node.type === 'subsection';
+    return (
+      <div
+        key={node.id}
+        className={`p-2.5 rounded-[12px] ${
+          isSubsection
+            ? 'bg-slate-50/60 border border-slate-200/80 ml-2 mt-1'
+            : 'bg-white border border-[#E5E7EB] mt-1'
+        } flex flex-col gap-2 text-left`}
+      >
+        <div className="flex items-center justify-between">
+          <span className="font-semibold text-xs text-gray-900 flex items-center gap-1.5">
+            {node.section_number && (
+              <span
+                className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-medium ${
+                  isSubsection ? 'bg-indigo-50 text-indigo-700' : 'bg-blue-50 text-blue-700'
+                }`}
+              >
+                {node.section_number}
+              </span>
+            )}
+            <span>{node.title || node.text}</span>
+          </span>
+          <span className="text-[9px] text-gray-400 font-mono">{node.id}</span>
+        </div>
+
+        {node.children && node.children.length > 0 && (
+          <div className="flex flex-col gap-1.5 pl-2 border-l-2 border-gray-200/60">
+            {node.children.map((child: any) => (
+              <NormalizedNodeRenderer key={child.id} node={child} depth={depth + 1} />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (node.type === 'clause' || node.type === 'subclause') {
+    const isSubclause = node.type === 'subclause';
+    return (
+      <div
+        key={node.id}
+        className={`p-2 rounded-[8px] ${
+          isSubclause
+            ? 'bg-white/90 border border-indigo-200/60 ml-2 shadow-xs'
+            : 'bg-gray-50/80 border border-gray-200/60'
+        } flex flex-col gap-1 text-left`}
+      >
+        <div className="flex items-center justify-between text-[10px]">
+          <span className="font-medium text-gray-900 flex items-center gap-1">
+            {node.clause_number && (
+              <span
+                className={`font-mono font-semibold ${
+                  isSubclause ? 'text-purple-700' : 'text-indigo-700'
+                }`}
+              >
+                {node.clause_number}
+              </span>
+            )}
+            {node.title && <span>{node.title}</span>}
+          </span>
+          <span className="text-[9px] text-gray-400 font-mono">{node.id}</span>
+        </div>
+
+        {/* Clause text (rendered once, no visual duplication) */}
+        <div className="text-[11px] text-gray-700 leading-relaxed">{node.text}</div>
+
+        {/* Recursively render nested subclauses, paragraphs, tables, or lists */}
+        {node.content && node.content.length > 0 && (
+          <div className="flex flex-col gap-1 pl-2 border-l-2 border-indigo-100/70 mt-1">
+            {node.content.map((child: any) => (
+              <NormalizedNodeRenderer key={child.id} node={child} depth={depth + 1} />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (node.type === 'table') {
+    return (
+      <div
+        key={node.id}
+        className="overflow-x-auto my-1 border border-gray-200 rounded-[8px] bg-white p-1 text-left"
+      >
+        <div className="text-[9px] text-gray-400 font-mono px-1 pb-1">
+          {node.id} • Table ({node.row_count} rows, {node.col_count} cols)
+        </div>
+        <table className="min-w-full text-[10px] divide-y divide-gray-200">
+          <tbody className="divide-y divide-gray-100">
+            {node.table_data?.map((row: string[], rIdx: number) => (
+              <tr key={rIdx} className={rIdx === 0 ? 'bg-gray-50 font-medium' : ''}>
+                {row.map((cell: string, cIdx: number) => (
+                  <td key={cIdx} className="px-2 py-1 text-gray-700 whitespace-nowrap">
+                    {cell}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  if (node.type === 'list') {
+    return (
+      <div
+        key={node.id}
+        className="p-2 rounded-[8px] bg-gray-50/50 border border-gray-100 flex flex-col gap-1 text-left"
+      >
+        <div className="text-[9px] text-gray-400 font-mono">{node.id} • List</div>
+        {node.items?.map((item: any) => (
+          <div key={item.id} className="text-[11px] text-gray-700 pl-1">
+            • {item.text.replace(/^[-*•]\s+/, '')}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div key={node.id} className="text-[11px] text-gray-700 py-0.5 text-left">
+      {node.text}
+    </div>
+  );
+}

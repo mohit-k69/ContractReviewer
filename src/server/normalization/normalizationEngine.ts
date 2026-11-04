@@ -19,8 +19,10 @@ const LEVEL_2_SUBSECTION_PREFIX = /^(Section|Clause)\s+([0-9]+\.[0-9]+)[\.:\s\-�
 const LEVEL_2_NUMBERED_DOT = /^([0-9]+\.[0-9]+)\.?\s+(.*)$/;
 
 const LEVEL_3_CLAUSE_PREFIX = /^([0-9]+\.[0-9]+\.[0-9]+)\.?\s+(.*)$/;
-const CLAUSE_PAREN_PREFIX = /^\(([a-zA-Z0-9]+)\)\s+(.*)$/;
-const INLINE_CLAUSE_PATTERN = /^([0-9]+\.[0-9]+(?:\.[0-9]+)?)\s+([A-Z][a-zA-Z0-9\s\/\-]{2,40}[\.\:\-—])\s*(.*)$/;
+const CLAUSE_PAREN_PREFIX = /^\(([a-zA-Z0-9]+)\)\s*(.*)$/s;
+const INLINE_CLAUSE_PATTERN = /^([0-9]+\.[0-9]+(?:\.[0-9]+)?)\s+([A-Z][a-zA-Z0-9\s\/\-]{2,40}[\.\:\-—])\s*(.*)$/s;
+const ROMAN_NUMERAL_REGEX = /^(i|ii|iii|iv|v|vi|vii|viii|ix|x|xi|xii|xiii|xiv|xv|xvi|xvii|xviii|xix|xx)$/i;
+const NUMERIC_CLAUSE_REGEX = /^\d+$/;
 
 interface HeadingAnalysis {
   isHeading: boolean;
@@ -187,6 +189,7 @@ export function normalizeExtraction(extraction: DocumentExtractionResult): Norma
   let currentSection: NormalizedSection | null = null;
   let currentSubsection: NormalizedSection | null = null;
   let currentClause: NormalizedClause | null = null;
+  let currentSubclause: NormalizedClause | null = null;
 
   let totalSections = 0;
   let totalSubsections = 0;
@@ -226,6 +229,7 @@ export function normalizeExtraction(extraction: DocumentExtractionResult): Norma
         currentSection = newSection;
         currentSubsection = null;
         currentClause = null;
+        currentSubclause = null;
         continue;
       }
 
@@ -251,6 +255,7 @@ export function normalizeExtraction(extraction: DocumentExtractionResult): Norma
           sections.push(currentSection);
           currentSubsection = null;
           currentClause = null;
+          currentSubclause = null;
           continue;
         }
 
@@ -272,6 +277,7 @@ export function normalizeExtraction(extraction: DocumentExtractionResult): Norma
         currentSection.children.push(newSubsection);
         currentSubsection = newSubsection;
         currentClause = null;
+        currentSubclause = null;
         continue;
       }
 
@@ -299,7 +305,6 @@ export function normalizeExtraction(extraction: DocumentExtractionResult): Norma
         } else if (currentSection) {
           currentSection.children.push(newClause);
         } else {
-          // If no section exists, wrap into an auto-section or unclassified
           totalSections++;
           currentSection = {
             id: `sec-${fileId}-${totalSections}`,
@@ -315,6 +320,7 @@ export function normalizeExtraction(extraction: DocumentExtractionResult): Norma
           sections.push(currentSection);
         }
         currentClause = newClause;
+        currentSubclause = null;
         continue;
       }
     }
@@ -323,7 +329,7 @@ export function normalizeExtraction(extraction: DocumentExtractionResult): Norma
     if (block.type === 'table') {
       totalTables++;
       totalElements++;
-      const parentId = currentClause?.id || currentSubsection?.id || currentSection?.id;
+      const parentId = currentSubclause?.id || currentClause?.id || currentSubsection?.id || currentSection?.id;
       const normalizedTable: NormalizedTable = {
         id: `tbl-${fileId}-${block.block_id}`,
         type: 'table',
@@ -338,7 +344,9 @@ export function normalizeExtraction(extraction: DocumentExtractionResult): Norma
         col_count: block.metadata?.col_count ?? (block.table_data?.[0]?.length || 0),
       };
 
-      if (currentClause) {
+      if (currentSubclause) {
+        currentSubclause.content.push(normalizedTable);
+      } else if (currentClause) {
         currentClause.content.push(normalizedTable);
       } else if (currentSubsection) {
         currentSubsection.children.push(normalizedTable);
@@ -354,7 +362,7 @@ export function normalizeExtraction(extraction: DocumentExtractionResult): Norma
     if (block.type === 'list') {
       totalLists++;
       totalElements++;
-      const parentId = currentClause?.id || currentSubsection?.id || currentSection?.id;
+      const parentId = currentSubclause?.id || currentClause?.id || currentSubsection?.id || currentSection?.id;
       const listId = `list-${fileId}-${block.block_id}`;
       const items = parseListItems(block, fileId, listId);
       const normalizedList: NormalizedList = {
@@ -369,7 +377,9 @@ export function normalizeExtraction(extraction: DocumentExtractionResult): Norma
         items,
       };
 
-      if (currentClause) {
+      if (currentSubclause) {
+        currentSubclause.content.push(normalizedList);
+      } else if (currentClause) {
         currentClause.content.push(normalizedList);
       } else if (currentSubsection) {
         currentSubsection.children.push(normalizedList);
@@ -381,61 +391,173 @@ export function normalizeExtraction(extraction: DocumentExtractionResult): Norma
       continue;
     }
 
-    // 4. Check for Paragraphs (with potential inline clause identification e.g. "(a) Term" or "1.1 Deliverables.")
+    // 4. Check for Paragraphs (with potential inline clause identification e.g. "(a) Term", "(i) Subclause", or "1.1 Deliverables.")
     const parenClauseMatch = block.text.match(CLAUSE_PAREN_PREFIX);
     const inlineClauseMatch = block.text.match(INLINE_CLAUSE_PATTERN);
 
-    if (currentSection && (parenClauseMatch || inlineClauseMatch)) {
-      totalClauses++;
-      totalParagraphs++;
-      totalElements += 2; // clause + enclosed paragraph
-
-      const clauseNum = parenClauseMatch ? parenClauseMatch[1] : inlineClauseMatch![1];
-      const clauseTitle = parenClauseMatch
-        ? undefined
-        : inlineClauseMatch![2].replace(/[\.\:\-—]\s*$/, '').trim();
-
-      const clauseId = `cl-${fileId}-${block.block_id}`;
-      const parentId = currentSubsection?.id || currentSection.id;
-
-      const paragraphInClause: NormalizedParagraph = {
-        id: `p-${fileId}-${block.block_id}`,
-        type: 'paragraph',
-        parent_id: clauseId,
-        source_block_ids: [block.block_id],
-        structural_position: structuralPosition,
-        page_number: block.page_number,
-        structural_ref: block.structural_ref,
-        text: block.text,
-      };
-
-      const newClause: NormalizedClause = {
-        id: clauseId,
-        type: parenClauseMatch && currentClause ? 'subclause' : 'clause',
-        parent_id: parentId,
-        clause_number: parenClauseMatch ? `(${clauseNum})` : clauseNum,
-        title: clauseTitle,
-        source_block_ids: [block.block_id],
-        structural_position: structuralPosition,
-        page_number: block.page_number,
-        structural_ref: block.structural_ref,
-        text: block.text,
-        content: [paragraphInClause],
-      };
-
-      if (currentSubsection) {
-        currentSubsection.children.push(newClause);
-      } else {
-        currentSection.children.push(newClause);
+    if (parenClauseMatch || inlineClauseMatch) {
+      // Auto-open section if none open yet
+      if (!currentSection) {
+        totalSections++;
+        currentSection = {
+          id: `sec-${fileId}-${totalSections}`,
+          type: 'section',
+          level: 1,
+          title: 'General Provisions',
+          source_block_ids: [],
+          structural_position: structuralPosition,
+          text: 'General Provisions',
+          children: [],
+        };
+        sections.push(currentSection);
       }
-      currentClause = newClause;
-      continue;
+
+      if (parenClauseMatch) {
+        const clauseMarker = parenClauseMatch[1];
+        const isRoman = ROMAN_NUMERAL_REGEX.test(clauseMarker);
+        const isNumeric = NUMERIC_CLAUSE_REGEX.test(clauseMarker);
+        const isAlpha = /^[a-zA-Z]$/.test(clauseMarker) && !isRoman;
+
+        if (isRoman && currentClause) {
+          // Roman numeral inside an active clause -> nested subclause e.g. (i), (ii)
+          // Sibling Roman numerals share parent_id = currentClause.id
+          totalClauses++;
+          totalElements++;
+          const subclauseId = `cl-${fileId}-${block.block_id}`;
+          const newSubclause: NormalizedClause = {
+            id: subclauseId,
+            type: 'subclause',
+            parent_id: currentClause.id,
+            clause_number: `(${clauseMarker})`,
+            source_block_ids: [block.block_id],
+            structural_position: structuralPosition,
+            page_number: block.page_number,
+            structural_ref: block.structural_ref,
+            text: block.text,
+            content: [],
+          };
+          currentClause.content.push(newSubclause);
+          currentSubclause = newSubclause;
+          continue;
+        }
+
+        if (isAlpha) {
+          // Alpha letter clause e.g. (a), (b)
+          // Sibling alpha clauses share parent_id = currentSubsection?.id || currentSection.id
+          // Sibling (b) resets any active subclauses and attaches to the section/subsection directly
+          totalClauses++;
+          totalElements++;
+          const clauseId = `cl-${fileId}-${block.block_id}`;
+          const parentId = currentSubsection?.id || currentSection.id;
+          const newClause: NormalizedClause = {
+            id: clauseId,
+            type: 'clause',
+            parent_id: parentId,
+            clause_number: `(${clauseMarker})`,
+            source_block_ids: [block.block_id],
+            structural_position: structuralPosition,
+            page_number: block.page_number,
+            structural_ref: block.structural_ref,
+            text: block.text,
+            content: [],
+          };
+
+          if (currentSubsection) {
+            currentSubsection.children.push(newClause);
+          } else {
+            currentSection.children.push(newClause);
+          }
+          currentClause = newClause;
+          currentSubclause = null;
+          continue;
+        }
+
+        if (isNumeric && currentClause && currentClause.clause_number && /^\([a-zA-Z]\)$/.test(currentClause.clause_number)) {
+          // Numeric parenthetical under an alpha clause e.g. (a) -> (1), (2)
+          totalClauses++;
+          totalElements++;
+          const subclauseId = `cl-${fileId}-${block.block_id}`;
+          const newSubclause: NormalizedClause = {
+            id: subclauseId,
+            type: 'subclause',
+            parent_id: currentClause.id,
+            clause_number: `(${clauseMarker})`,
+            source_block_ids: [block.block_id],
+            structural_position: structuralPosition,
+            page_number: block.page_number,
+            structural_ref: block.structural_ref,
+            text: block.text,
+            content: [],
+          };
+          currentClause.content.push(newSubclause);
+          currentSubclause = newSubclause;
+          continue;
+        }
+
+        // Generic parenthetical clause under section/subsection
+        totalClauses++;
+        totalElements++;
+        const clauseId = `cl-${fileId}-${block.block_id}`;
+        const parentId = currentSubsection?.id || currentSection.id;
+        const newClause: NormalizedClause = {
+          id: clauseId,
+          type: 'clause',
+          parent_id: parentId,
+          clause_number: `(${clauseMarker})`,
+          source_block_ids: [block.block_id],
+          structural_position: structuralPosition,
+          page_number: block.page_number,
+          structural_ref: block.structural_ref,
+          text: block.text,
+          content: [],
+        };
+        if (currentSubsection) {
+          currentSubsection.children.push(newClause);
+        } else {
+          currentSection.children.push(newClause);
+        }
+        currentClause = newClause;
+        currentSubclause = null;
+        continue;
+      }
+
+      if (inlineClauseMatch) {
+        totalClauses++;
+        totalElements++;
+        const clauseNum = inlineClauseMatch[1];
+        const clauseTitle = inlineClauseMatch[2].replace(/[\.\:\-—]\s*$/, '').trim();
+        const clauseId = `cl-${fileId}-${block.block_id}`;
+        const parentId = currentSubsection?.id || currentSection.id;
+
+        const newClause: NormalizedClause = {
+          id: clauseId,
+          type: 'clause',
+          parent_id: parentId,
+          clause_number: clauseNum,
+          title: clauseTitle,
+          source_block_ids: [block.block_id],
+          structural_position: structuralPosition,
+          page_number: block.page_number,
+          structural_ref: block.structural_ref,
+          text: block.text,
+          content: [],
+        };
+
+        if (currentSubsection) {
+          currentSubsection.children.push(newClause);
+        } else {
+          currentSection.children.push(newClause);
+        }
+        currentClause = newClause;
+        currentSubclause = null;
+        continue;
+      }
     }
 
     // Standard Paragraph
     totalParagraphs++;
     totalElements++;
-    const parentId = currentClause?.id || currentSubsection?.id || currentSection?.id;
+    const parentId = currentSubclause?.id || currentClause?.id || currentSubsection?.id || currentSection?.id;
     const normalizedParagraph: NormalizedParagraph = {
       id: `p-${fileId}-${block.block_id}`,
       type: 'paragraph',
@@ -447,7 +569,9 @@ export function normalizeExtraction(extraction: DocumentExtractionResult): Norma
       text: block.text,
     };
 
-    if (currentClause) {
+    if (currentSubclause) {
+      currentSubclause.content.push(normalizedParagraph);
+    } else if (currentClause) {
       currentClause.content.push(normalizedParagraph);
     } else if (currentSubsection) {
       currentSubsection.children.push(normalizedParagraph);

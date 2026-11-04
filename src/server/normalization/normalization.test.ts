@@ -370,6 +370,176 @@ describe('Phase 2B Document Normalization Engine — Unit Tests', () => {
     assert.equal(run1.sections[0].children[0].id, run2.sections[0].children[0].id);
     assert.equal(run1.sections[0].children[1].id, run2.sections[0].children[1].id);
   });
+
+  // Test 7: Regression Test: Sibling clauses (a) and (b)
+  it('should correctly structure sibling clauses (a) and (b) under the same parent without nesting or text duplication', () => {
+    const blocks: ExtractedBlock[] = [
+      {
+        block_id: 's1',
+        type: 'heading',
+        metadata: { heading_level: 1 },
+        text: 'SECTION 5. TERM AND TERMINATION',
+      },
+      {
+        block_id: 'p1',
+        type: 'paragraph',
+        text: 'The term of this Agreement shall be governed by the following provisions:',
+      },
+      {
+        block_id: 'c1',
+        type: 'paragraph',
+        text: '(a) Initial Term. The Initial Term shall commence on the Effective Date and continue for two (2) years.',
+      },
+      {
+        block_id: 'c2',
+        type: 'paragraph',
+        text: '(b) Renewal Term. This Agreement shall automatically renew for successive one (1) year periods.',
+      },
+    ];
+
+    const extraction: DocumentExtractionResult = {
+      document_id: 'doc-sibling-test',
+      source_file_id: 'file-sibling-test',
+      source_format: 'txt',
+      verified_sha256: 'sibling-sha-123',
+      extraction_status: 'COMPLETED',
+      total_blocks: blocks.length,
+      blocks,
+      warnings: [],
+      extraction_duration_ms: 10,
+      extracted_at: new Date().toISOString(),
+    };
+
+    const normalized = normalizeExtraction(extraction);
+
+    assert.equal(normalized.sections.length, 1);
+    const sec = normalized.sections[0];
+    assert.equal(sec.children.length, 3); // intro paragraph, clause (a), clause (b)
+
+    const introPara = sec.children[0];
+    const clauseA = sec.children[1] as any;
+    const clauseB = sec.children[2] as any;
+
+    assert.equal(introPara.type, 'paragraph');
+    assert.equal(introPara.text, blocks[1].text);
+
+    // Clause (a) checks
+    assert.equal(clauseA.type, 'clause');
+    assert.equal(clauseA.clause_number, '(a)');
+    assert.equal(clauseA.parent_id, sec.id);
+    assert.equal(clauseA.text, blocks[2].text);
+    assert.deepEqual(clauseA.source_block_ids, ['c1']);
+    assert.equal(clauseA.content.length, 0); // No duplicated child paragraph!
+
+    // Clause (b) checks
+    assert.equal(clauseB.type, 'clause');
+    assert.equal(clauseB.clause_number, '(b)');
+    assert.equal(clauseB.parent_id, sec.id); // Must share parent with (a), NOT nested inside (a)!
+    assert.equal(clauseB.text, blocks[3].text);
+    assert.deepEqual(clauseB.source_block_ids, ['c2']);
+    assert.equal(clauseB.content.length, 0); // No duplicated child paragraph!
+
+    // Verify each source block is represented once and only once
+    const allIds = normalized.source_block_ids;
+    assert.equal(allIds.length, 4);
+    assert.deepEqual(allIds, ['s1', 'p1', 'c1', 'c2']);
+  });
+
+  // Test 8: Regression Test: Nested clauses (a) -> (i), (ii) -> (b)
+  it('should correctly structure nested clauses (a) -> (i), (ii) -> (b) with exact hierarchy and text preservation', () => {
+    const blocks: ExtractedBlock[] = [
+      {
+        block_id: 'sec-block',
+        type: 'heading',
+        metadata: { heading_level: 1 },
+        text: '3. CONDITIONS PRECEDENT',
+      },
+      {
+        block_id: 'cl-a',
+        type: 'paragraph',
+        text: '(a) Closing Conditions. The obligations of Buyer are subject to the following conditions:',
+      },
+      {
+        block_id: 'subcl-i',
+        type: 'paragraph',
+        text: '(i) Delivery of executed assignment agreements by Seller.',
+      },
+      {
+        block_id: 'subcl-ii',
+        type: 'paragraph',
+        text: '(ii) Receipt of regulatory clearance under Hart-Scott-Rodino Act.',
+      },
+      {
+        block_id: 'cl-b',
+        type: 'paragraph',
+        text: '(b) Termination Rights. Either party may terminate if conditions are not satisfied by December 31, 2026.',
+      },
+    ];
+
+    const extraction: DocumentExtractionResult = {
+      document_id: 'doc-nested-test',
+      source_file_id: 'file-nested-test',
+      source_format: 'docx',
+      verified_sha256: 'nested-sha-456',
+      extraction_status: 'COMPLETED',
+      total_blocks: blocks.length,
+      blocks,
+      warnings: [],
+      extraction_duration_ms: 15,
+      extracted_at: new Date().toISOString(),
+    };
+
+    const normalized = normalizeExtraction(extraction);
+
+    assert.equal(normalized.sections.length, 1);
+    const sec = normalized.sections[0];
+
+    // Section should directly contain clause (a) and clause (b)
+    assert.equal(sec.children.length, 2);
+    const clauseA = sec.children[0] as any;
+    const clauseB = sec.children[1] as any;
+
+    // Clause (a) checks
+    assert.equal(clauseA.type, 'clause');
+    assert.equal(clauseA.clause_number, '(a)');
+    assert.equal(clauseA.parent_id, sec.id);
+    assert.equal(clauseA.text, blocks[1].text);
+    assert.deepEqual(clauseA.source_block_ids, ['cl-a']);
+
+    // Clause (a) should contain subclauses (i) and (ii) in its content
+    assert.equal(clauseA.content.length, 2);
+    const subclauseI = clauseA.content[0] as any;
+    const subclauseII = clauseA.content[1] as any;
+
+    // Subclause (i) checks
+    assert.equal(subclauseI.type, 'subclause');
+    assert.equal(subclauseI.clause_number, '(i)');
+    assert.equal(subclauseI.parent_id, clauseA.id);
+    assert.equal(subclauseI.text, blocks[2].text);
+    assert.deepEqual(subclauseI.source_block_ids, ['subcl-i']);
+    assert.equal(subclauseI.content.length, 0);
+
+    // Subclause (ii) checks: sibling to (i), sharing parent_id = clauseA.id
+    assert.equal(subclauseII.type, 'subclause');
+    assert.equal(subclauseII.clause_number, '(ii)');
+    assert.equal(subclauseII.parent_id, clauseA.id);
+    assert.equal(subclauseII.text, blocks[3].text);
+    assert.deepEqual(subclauseII.source_block_ids, ['subcl-ii']);
+    assert.equal(subclauseII.content.length, 0);
+
+    // Clause (b) checks: sibling to (a) directly under Section, NOT inside (a) or (ii)
+    assert.equal(clauseB.type, 'clause');
+    assert.equal(clauseB.clause_number, '(b)');
+    assert.equal(clauseB.parent_id, sec.id);
+    assert.equal(clauseB.text, blocks[4].text);
+    assert.deepEqual(clauseB.source_block_ids, ['cl-b']);
+    assert.equal(clauseB.content.length, 0);
+
+    // Total elements & source blocks: 1 section + 2 clauses + 2 subclauses = 5 elements
+    assert.equal(normalized.total_elements, 5);
+    assert.equal(normalized.total_clauses, 4); // 2 clauses + 2 subclauses
+    assert.deepEqual(normalized.source_block_ids, ['sec-block', 'cl-a', 'subcl-i', 'subcl-ii', 'cl-b']);
+  });
 });
 
 function createMockReport(
@@ -543,5 +713,93 @@ describe('Phase 2B Normalization Service & Lifecycle Tests', () => {
     const normRes = await normalizeContractDocument(fileId, sessionId);
     assert.equal(normRes.success, false);
     assert.ok(normRes.error?.includes('deleted, or has expired'));
+  });
+
+  it('should invalidate cached normalization if document security status changes to threat detected', async () => {
+    const { fileId, metadata } = storeInQuarantine(validBuffer, 'status-change.txt', 'text/plain', sessionId);
+    const report = createMockReport(fileId, metadata, 'CLEAN_NO_KNOWN_THREATS', true);
+    saveSecurityReport(report);
+
+    await extractContractDocument(fileId, sessionId);
+    const normRes = await normalizeContractDocument(fileId, sessionId);
+    assert.equal(normRes.success, true);
+
+    // Verify it is in cache
+    const initialLookup = getCachedNormalization(fileId, sessionId);
+    assert.equal(initialLookup.exists, true);
+
+    // Update security report to simulate threat detection post-normalization
+    const threatReport = createMockReport(fileId, metadata, 'THREAT_DETECTED', false);
+    saveSecurityReport(threatReport);
+
+    // Cache lookup should now fail and invalidate cache
+    const failedLookup = getCachedNormalization(fileId, sessionId);
+    assert.equal(failedLookup.exists, false);
+    assert.ok(failedLookup.error?.includes('Security verification failed'));
+
+    // Cache should be purged
+    const secondLookup = getCachedNormalization(fileId, sessionId);
+    assert.equal(secondLookup.exists, false);
+  });
+
+  it('should invalidate cached normalization if document becomes ineligible', async () => {
+    const { fileId, metadata } = storeInQuarantine(validBuffer, 'ineligible.txt', 'text/plain', sessionId);
+    const report = createMockReport(fileId, metadata, 'CLEAN_NO_KNOWN_THREATS', true);
+    saveSecurityReport(report);
+
+    await extractContractDocument(fileId, sessionId);
+    const normRes = await normalizeContractDocument(fileId, sessionId);
+    assert.equal(normRes.success, true);
+
+    // Update security report to ineligible
+    const ineligibleReport = createMockReport(fileId, metadata, 'CLEAN_NO_KNOWN_THREATS', false);
+    saveSecurityReport(ineligibleReport);
+
+    // Cache lookup should fail and invalidate cache
+    const lookup = getCachedNormalization(fileId, sessionId);
+    assert.equal(lookup.exists, false);
+    assert.ok(lookup.error?.includes('not eligible for contract processing'));
+  });
+
+  it('should invalidate cached normalization if physical quarantined file is missing from disk', async () => {
+    const { fileId, metadata, filePath } = storeInQuarantine(validBuffer, 'missing-file.txt', 'text/plain', sessionId);
+    const report = createMockReport(fileId, metadata, 'CLEAN_NO_KNOWN_THREATS', true);
+    saveSecurityReport(report);
+
+    await extractContractDocument(fileId, sessionId);
+    const normRes = await normalizeContractDocument(fileId, sessionId);
+    assert.equal(normRes.success, true);
+
+    // Remove the physical file from disk without purging the registry record
+    const fs = await import('node:fs');
+    fs.unlinkSync(filePath);
+
+    // Cache lookup should fail on physical file retrieval and invalidate cache
+    const lookup = getCachedNormalization(fileId, sessionId);
+    assert.equal(lookup.exists, false);
+    assert.ok(
+      lookup.error?.includes('does not exist on disk') ||
+        lookup.error?.includes('Quarantined document payload could not be retrieved') ||
+        lookup.error?.includes('missing')
+    );
+  });
+
+  it('should invalidate cached normalization if physical file is tampered with after normalization', async () => {
+    const { fileId, metadata, filePath } = storeInQuarantine(validBuffer, 'tamper-cache.txt', 'text/plain', sessionId);
+    const report = createMockReport(fileId, metadata, 'CLEAN_NO_KNOWN_THREATS', true);
+    saveSecurityReport(report);
+
+    await extractContractDocument(fileId, sessionId);
+    const normRes = await normalizeContractDocument(fileId, sessionId);
+    assert.equal(normRes.success, true);
+
+    // Tamper with physical file
+    const fs = await import('node:fs');
+    fs.writeFileSync(filePath, Buffer.from('POST_NORMALIZATION_TAMPERED_DATA'));
+
+    // Cache lookup should detect fingerprint mismatch, reject, and invalidate cache
+    const lookup = getCachedNormalization(fileId, sessionId);
+    assert.equal(lookup.exists, false);
+    assert.ok(lookup.error?.includes('Integrity violation'));
   });
 });
