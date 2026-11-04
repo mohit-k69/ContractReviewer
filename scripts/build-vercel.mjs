@@ -69,8 +69,8 @@ fs.writeFileSync(
       launcherType: 'Nodejs',
       // Raw Node req/res: multer and express parse the request themselves.
       shouldAddHelpers: false,
+      // Memory is intentionally not set here: projects on Vercel's newer compute model configure it per project.
       maxDuration: 60,
-      memory: 1024,
     },
     null,
     2
