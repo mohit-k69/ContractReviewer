@@ -10,3 +10,4 @@ coverage/
 .quarantine/
 .aistudio/
 tmp/
+bun.lock
