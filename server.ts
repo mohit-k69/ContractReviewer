@@ -19,6 +19,8 @@ import {
   AuthenticatedRequest,
 } from './src/server/security/sessionAuth';
 import { uploadResourceGuard } from './src/server/security/resourceProtection';
+import { extractContractDocument, getCachedExtraction } from './src/server/extraction/extractionService';
+import { startClamAvDevDaemon } from './src/server/security/clamavDevDaemon';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -31,6 +33,14 @@ async function startServer() {
   console.log(
     `[QuarantineReconciliation] Restored: ${reconciliation.restored}, Purged expired: ${reconciliation.purged}, Failed: ${reconciliation.failed}`
   );
+
+  // Initialize ClamAV socket daemon for environment if unconfigured
+  if (!process.env.CLAMAV_HOST) {
+    const clamDaemon = await startClamAvDevDaemon();
+    process.env.CLAMAV_HOST = clamDaemon.host;
+    process.env.CLAMAV_PORT = clamDaemon.port.toString();
+    console.log(`[ClamAV Daemon] Initialized socket antivirus service on ${clamDaemon.host}:${clamDaemon.port}`);
+  }
 
   const app = express();
   const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
@@ -145,6 +155,49 @@ async function startServer() {
     }
 
     return res.json({ success: true, message: 'Document removed from quarantine.' });
+  });
+
+  // 5. Document Extraction Endpoint (Phase 2A)
+  // Protected by HttpOnly cookie session auth, verifies ownership, CLEAN status, eligibility, and SHA-256 fingerprint
+  app.post('/api/contracts/:id/extract', requireSessionAuth, async (req: AuthenticatedRequest, res) => {
+    try {
+      const fileId = req.params.id;
+      const sessionId = req.verifiedSession!.sessionId;
+
+      const extractionResponse = await extractContractDocument(fileId, sessionId);
+
+      if (!extractionResponse.authorized) {
+        return res.status(403).json({ error: extractionResponse.error || 'Access denied: Session ownership mismatch.' });
+      }
+
+      if (!extractionResponse.success && !extractionResponse.result) {
+        return res.status(400).json({ error: extractionResponse.error || 'Extraction failed.' });
+      }
+
+      return res.json(extractionResponse.result);
+    } catch (err: any) {
+      return res.status(500).json({
+        error: err.message || 'Internal error during contract document extraction.',
+      });
+    }
+  });
+
+  // 6. Cached Extraction Retrieval Endpoint
+  app.get('/api/contracts/:id/extract', requireSessionAuth, (req: AuthenticatedRequest, res) => {
+    const fileId = req.params.id;
+    const sessionId = req.verifiedSession!.sessionId;
+
+    const { report, authorized } = getSecurityReport(fileId, sessionId);
+    if (!authorized) {
+      return res.status(403).json({ error: 'Access denied: Session ownership mismatch.' });
+    }
+
+    const cached = getCachedExtraction(fileId);
+    if (!cached) {
+      return res.status(404).json({ error: 'No extraction record found for this document.' });
+    }
+
+    return res.json(cached);
   });
 
   // Vite middleware in dev or static files in production

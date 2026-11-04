@@ -9,6 +9,10 @@ import {
   Loader2,
   ChevronDown,
   ChevronUp,
+  CheckCircle2,
+  Layers,
+  AlertTriangle,
+  Table,
 } from 'lucide-react';
 import {
   ALLOWED_EXTENSIONS,
@@ -17,6 +21,7 @@ import {
   validateContractFile,
 } from '../utils/fileValidation';
 import { FullSecurityReport } from '../server/security/types';
+import { DocumentExtractionResult, ExtractedBlock } from '../server/extraction/types';
 
 export interface UploadedContractFile {
   file: File;
@@ -25,6 +30,8 @@ export interface UploadedContractFile {
   type: string;
   securityReport?: FullSecurityReport;
   isScanning?: boolean;
+  extractionResult?: DocumentExtractionResult;
+  isExtracting?: boolean;
 }
 
 interface ContractFileUploadProps {
@@ -54,6 +61,8 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [showSecurityDetails, setShowSecurityDetails] = useState(false);
+  const [isExtracting, setIsExtracting] = useState(false);
+  const [showExtractionBlocks, setShowExtractionBlocks] = useState(false);
 
   // Initialize secure session cookie on component mount
   useEffect(() => {
@@ -159,7 +168,42 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
     }
     setErrorMessage(null);
     setShowSecurityDetails(false);
+    setShowExtractionBlocks(false);
     onFileSelect(null);
+  };
+
+  const handleReviewContract = async () => {
+    if (!selectedFile?.securityReport?.fileId) return;
+    const fileId = selectedFile.securityReport.fileId;
+
+    setIsExtracting(true);
+    setErrorMessage(null);
+
+    try {
+      const res = await fetch(`/api/contracts/${fileId}/extract`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `Extraction failed with HTTP ${res.status}`);
+      }
+
+      const extractionResult: DocumentExtractionResult = await res.json();
+      setIsExtracting(false);
+      onFileSelect({
+        ...selectedFile,
+        extractionResult,
+        isExtracting: false,
+      });
+    } catch (err: any) {
+      setIsExtracting(false);
+      setErrorMessage(err.message || 'Failed to extract contract content.');
+    }
   };
 
   const report = selectedFile?.securityReport;
@@ -182,8 +226,9 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
       />
 
       {selectedFile ? (
-        /* Selected file card */
-        <div className="flex flex-col gap-2.5 p-3.5 rounded-[16px] border border-[#E5E7EB] bg-[#FAFAFA] transition-all">
+        <div className="flex flex-col gap-2 w-full">
+          {/* Selected file card */}
+          <div className="flex flex-col gap-2.5 p-3.5 rounded-[16px] border border-[#E5E7EB] bg-[#FAFAFA] transition-all">
           <div className="flex items-start justify-between gap-2">
             <div className="flex items-start gap-2.5 overflow-hidden">
               <div
@@ -337,6 +382,174 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
               </button>
             </div>
           </div>
+        </div>
+
+        {/* Phase 2A Review Trigger & Extraction Result */}
+        {isClean && report?.eligibleForContractProcessing && (
+          <div className="flex flex-col gap-2 mt-1">
+            {!selectedFile.extractionResult && (
+              <button
+                type="button"
+                onClick={handleReviewContract}
+                disabled={isExtracting}
+                className="w-full h-11 rounded-[14px] bg-blue-600 hover:bg-blue-700 active:bg-blue-800 disabled:bg-blue-400 text-white font-medium text-xs tracking-tight transition-all flex items-center justify-center gap-2 cursor-pointer shadow-sm disabled:cursor-not-allowed"
+              >
+                {isExtracting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin text-white" />
+                    <span>Extracting readable content...</span>
+                  </>
+                ) : (
+                  <>
+                    <FileText className="w-4 h-4 text-white" />
+                    <span>Review Contract</span>
+                  </>
+                )}
+              </button>
+            )}
+
+            {isExtracting && (
+              <div className="text-[11px] text-gray-500 text-center py-1">
+                Verifying cryptographic integrity & extracting structure...
+              </div>
+            )}
+
+            {selectedFile.extractionResult && (
+              <div className="flex flex-col gap-2 p-3.5 rounded-[16px] border border-[#E5E7EB] bg-[#FAFAFA]">
+                {/* Status Header */}
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    {selectedFile.extractionResult.extraction_status === 'COMPLETED' ? (
+                      <div className="p-1.5 rounded-lg bg-emerald-50 text-emerald-600 shrink-0">
+                        <CheckCircle2 className="w-4 h-4" />
+                      </div>
+                    ) : selectedFile.extractionResult.extraction_status === 'OCR_REQUIRED' ||
+                      selectedFile.extractionResult.extraction_status === 'PARTIAL' ? (
+                      <div className="p-1.5 rounded-lg bg-amber-50 text-amber-600 shrink-0">
+                        <AlertTriangle className="w-4 h-4" />
+                      </div>
+                    ) : (
+                      <div className="p-1.5 rounded-lg bg-rose-50 text-rose-600 shrink-0">
+                        <AlertCircle className="w-4 h-4" />
+                      </div>
+                    )}
+
+                    <div className="flex flex-col min-w-0">
+                      <span className="text-xs font-semibold text-gray-900">
+                        {selectedFile.extractionResult.extraction_status === 'COMPLETED'
+                          ? 'Extraction Complete'
+                          : selectedFile.extractionResult.extraction_status === 'OCR_REQUIRED'
+                          ? 'OCR Required'
+                          : selectedFile.extractionResult.extraction_status === 'PARTIAL'
+                          ? 'Partial Extraction'
+                          : 'Extraction Failed'}
+                      </span>
+                      <span className="text-[10px] text-gray-500">
+                        {selectedFile.extractionResult.total_blocks} blocks •{' '}
+                        {selectedFile.extractionResult.extraction_duration_ms}ms
+                      </span>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowExtractionBlocks(!showExtractionBlocks)}
+                    className="text-[11px] text-blue-600 hover:text-blue-700 flex items-center gap-0.5 cursor-pointer font-medium"
+                  >
+                    <span>{showExtractionBlocks ? 'Hide' : 'View'}</span>
+                    {showExtractionBlocks ? (
+                      <ChevronUp className="w-3.5 h-3.5" />
+                    ) : (
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    )}
+                  </button>
+                </div>
+
+                {/* Status Notice */}
+                {selectedFile.extractionResult.extraction_status === 'OCR_REQUIRED' && (
+                  <div className="p-2.5 rounded-[12px] bg-amber-50/70 border border-amber-200 text-amber-800 text-[11px] leading-relaxed">
+                    This document appears to be scanned or image-based. Optical Character Recognition (OCR) is required to read text content.
+                  </div>
+                )}
+
+                {selectedFile.extractionResult.warnings.length > 0 && (
+                  <div className="flex flex-col gap-1 text-[10px] text-amber-700 bg-amber-50/50 p-2 rounded-[10px] border border-amber-100">
+                    {selectedFile.extractionResult.warnings.map((w, idx) => (
+                      <span key={idx} className="leading-tight">• {w}</span>
+                    ))}
+                  </div>
+                )}
+
+                {/* Expandable Document Structure Blocks */}
+                {showExtractionBlocks && (
+                  <div className="flex flex-col gap-2 mt-1 max-h-[360px] overflow-y-auto pr-0.5">
+                    {selectedFile.extractionResult.blocks.length === 0 ? (
+                      <div className="text-[11px] text-gray-400 text-center py-4">
+                        No structural blocks to display.
+                      </div>
+                    ) : (
+                      selectedFile.extractionResult.blocks.map((block) => (
+                        <div
+                          key={block.block_id}
+                          className="p-2.5 rounded-[12px] bg-white border border-[#E5E7EB] text-left text-xs flex flex-col gap-1"
+                        >
+                          <div className="flex items-center justify-between text-[9px] text-gray-400 font-mono">
+                            <span className="uppercase tracking-wider font-semibold text-gray-500">
+                              {block.type} {block.metadata?.heading_level ? `H${block.metadata.heading_level}` : ''}
+                            </span>
+                            <span>{block.structural_ref || block.block_id}</span>
+                          </div>
+
+                          {block.type === 'heading' ? (
+                            <div className="font-semibold text-gray-900 text-xs border-l-2 border-blue-500 pl-2">
+                              {block.text}
+                            </div>
+                          ) : block.type === 'list' ? (
+                            <div className="text-[11px] text-gray-800 pl-2 leading-relaxed">
+                              • {block.text.replace(/^[-*•]\s+/, '')}
+                            </div>
+                          ) : block.type === 'table' && block.table_data ? (
+                            <div className="overflow-x-auto my-1 border border-gray-100 rounded">
+                              <table className="min-w-full text-[10px] divide-y divide-gray-200">
+                                <tbody className="divide-y divide-gray-100">
+                                  {block.table_data.map((row, rIdx) => (
+                                    <tr key={rIdx} className={rIdx === 0 ? 'bg-gray-50 font-medium' : ''}>
+                                      {row.map((cell, cIdx) => (
+                                        <td key={cIdx} className="px-2 py-1 text-gray-700 whitespace-nowrap">
+                                          {cell}
+                                        </td>
+                                      ))}
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          ) : (
+                            <div className="text-[11px] text-gray-700 leading-relaxed">
+                              {block.text}
+                            </div>
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between pt-1 border-t border-gray-200/60 text-[10px] text-gray-400">
+                  <span>SHA-256 Verified Match</span>
+                  <button
+                    type="button"
+                    onClick={handleReviewContract}
+                    disabled={isExtracting}
+                    className="text-blue-600 hover:text-blue-700 hover:underline cursor-pointer"
+                  >
+                    Re-extract
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
         </div>
       ) : (
         /* Dropzone / Upload area */

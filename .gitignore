@@ -8,3 +8,5 @@ coverage/
 !.env.example
 .playwright-cli/
 .quarantine/
+.aistudio/
+tmp/

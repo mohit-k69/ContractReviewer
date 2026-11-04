@@ -184,6 +184,32 @@ export function getSecurityReport(
   return { report: record.report, authorized: true };
 }
 
+export function getQuarantinedFileBuffer(
+  fileId: string,
+  requestingSessionId: string
+): { buffer?: Buffer; metadata?: FileMetadata; authorized: boolean; error?: string } {
+  const record = quarantineRegistry.get(fileId);
+  if (!record) {
+    return { authorized: true, error: 'Document not found in quarantine registry.' };
+  }
+
+  if (record.metadata.sessionId !== requestingSessionId) {
+    return { authorized: false, error: 'Access denied: Session ownership mismatch.' };
+  }
+
+  const filePath = path.join(QUARANTINE_DIR, `${fileId}.quarantine`);
+  if (!fs.existsSync(filePath)) {
+    return { authorized: true, error: 'Quarantined file payload does not exist on disk.' };
+  }
+
+  try {
+    const buffer = fs.readFileSync(filePath);
+    return { buffer, metadata: record.metadata, authorized: true };
+  } catch (err: any) {
+    return { authorized: true, error: `Failed reading quarantined document: ${err.message}` };
+  }
+}
+
 export function deleteQuarantinedFile(
   fileId: string,
   requestingSessionId: string
