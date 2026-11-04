@@ -1,0 +1,547 @@
+import test, { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
+import { normalizeExtraction } from './normalizationEngine';
+import {
+  normalizeContractDocument,
+  getCachedNormalization,
+  clearAllCachedNormalizations,
+  invalidateCachedNormalization,
+} from './normalizationService';
+import { DocumentExtractionResult, ExtractedBlock } from '../extraction/types';
+import {
+  storeInQuarantine,
+  saveSecurityReport,
+  deleteQuarantinedFile,
+  purgeDocumentRecord,
+} from '../security/quarantineManager';
+import { extractContractDocument } from '../extraction/extractionService';
+import { FullSecurityReport } from '../security/types';
+
+describe('Phase 2B Document Normalization Engine — Unit Tests', () => {
+  // Test 1: TXT Normalization with numbered sections, clauses, preamble, and exact financial figures
+  it('should normalize TXT contract with preamble, numbered sections, clauses, and exact figures', () => {
+    const blocks: ExtractedBlock[] = [
+      {
+        block_id: 'b1',
+        type: 'paragraph',
+        text: 'INDEPENDENT CONTRACTOR AGREEMENT\nThis Agreement is entered into on January 15, 2026 by and between Company Inc. and Contractor LLC.',
+      },
+      {
+        block_id: 'b2',
+        type: 'heading',
+        metadata: { heading_level: 1 },
+        text: '1. SCOPE OF SERVICES',
+      },
+      {
+        block_id: 'b3',
+        type: 'paragraph',
+        text: 'Contractor agrees to provide software development and architecture consulting services.',
+      },
+      {
+        block_id: 'b4',
+        type: 'heading',
+        metadata: { heading_level: 2 },
+        text: '1.1 Deliverables and Milestones',
+      },
+      {
+        block_id: 'b5',
+        type: 'paragraph',
+        text: 'Deliverables shall be provided in accordance with Schedule A attached hereto.',
+      },
+      {
+        block_id: 'b6',
+        type: 'paragraph',
+        text: '(a) Phase 1 delivery is scheduled for March 1, 2026.',
+      },
+      {
+        block_id: 'b7',
+        type: 'paragraph',
+        text: '(b) Phase 2 delivery is scheduled for June 30, 2026.',
+      },
+      {
+        block_id: 'b8',
+        type: 'heading',
+        metadata: { heading_level: 1 },
+        text: '2. COMPENSATION AND PAYMENT TERMS',
+      },
+      {
+        block_id: 'b9',
+        type: 'paragraph',
+        text: 'Company agrees to pay Contractor a fixed fee of $15,750.00 USD plus applicable taxes of 8.25%. Invoices are due Net 30 days from receipt. Late fees of 1.5% per month will apply.',
+      },
+    ];
+
+    const extraction: DocumentExtractionResult = {
+      document_id: 'doc-txt-1',
+      source_file_id: 'file-txt-1',
+      source_format: 'txt',
+      verified_sha256: 'a1b2c3d4e5f6',
+      extraction_status: 'COMPLETED',
+      total_blocks: blocks.length,
+      blocks,
+      warnings: [],
+      extraction_duration_ms: 12,
+      extracted_at: new Date().toISOString(),
+    };
+
+    const normalized = normalizeExtraction(extraction);
+
+    assert.equal(normalized.normalization_status, 'COMPLETED');
+    assert.equal(normalized.source_format, 'txt');
+    assert.equal(normalized.verified_sha256, 'a1b2c3d4e5f6');
+
+    // Preamble should be preserved in unclassified_blocks
+    assert.equal(normalized.unclassified_blocks.length, 1);
+    assert.equal(normalized.unclassified_blocks[0].text, blocks[0].text);
+    assert.equal(normalized.unclassified_blocks[0].id, 'p-file-txt-1-b1');
+
+    // Sections
+    assert.equal(normalized.sections.length, 2);
+    assert.equal(normalized.sections[0].title, 'SCOPE OF SERVICES');
+    assert.equal(normalized.sections[0].section_number, '1.');
+    assert.equal(normalized.sections[1].title, 'COMPENSATION AND PAYMENT TERMS');
+    assert.equal(normalized.sections[1].section_number, '2.');
+
+    // Exact financial figures preserved without alteration
+    const compensationText = normalized.sections[1].children[0].text;
+    assert.ok(compensationText.includes('$15,750.00 USD'));
+    assert.ok(compensationText.includes('8.25%'));
+    assert.ok(compensationText.includes('Net 30'));
+    assert.ok(compensationText.includes('1.5% per month'));
+
+    // Subsections and clauses inside Section 1
+    const sec1Children = normalized.sections[0].children;
+    assert.ok(sec1Children.some((c) => c.type === 'subsection' && c.title === 'Deliverables and Milestones'));
+  });
+
+  // Test 2: DOCX Normalization with tables, lists, and metadata heading levels
+  it('should normalize DOCX contract with tables, lists, and preserve cell relations', () => {
+    const tableData = [
+      ['Milestone', 'Completion Date', 'Fee Amount ($)'],
+      ['Phase 1 Prototype', '2026-04-15', '$5,000.00'],
+      ['Phase 2 Beta Release', '2026-07-01', '$7,500.00'],
+      ['Final Acceptance', '2026-09-30', '$10,000.00'],
+    ];
+
+    const blocks: ExtractedBlock[] = [
+      {
+        block_id: 'd1',
+        type: 'heading',
+        metadata: { heading_level: 1 },
+        text: 'SECTION 1. STATEMENT OF WORK',
+      },
+      {
+        block_id: 'd2',
+        type: 'paragraph',
+        text: 'The parties agree to the following payment schedule and milestone deliveries:',
+      },
+      {
+        block_id: 'd3',
+        type: 'table',
+        table_data: tableData,
+        metadata: { row_count: 4, col_count: 3 },
+        text: 'Milestone | Completion Date | Fee Amount ($)\nPhase 1 Prototype | 2026-04-15 | $5,000.00',
+      },
+      {
+        block_id: 'd4',
+        type: 'heading',
+        metadata: { heading_level: 1 },
+        text: 'SECTION 2. CONTRACTOR RESPONSIBILITIES',
+      },
+      {
+        block_id: 'd5',
+        type: 'list',
+        text: '1. Maintain confidentiality of proprietary data.\n2. Supply own equipment and tools.\n3. Comply with security policies.',
+      },
+    ];
+
+    const extraction: DocumentExtractionResult = {
+      document_id: 'doc-docx-1',
+      source_file_id: 'file-docx-1',
+      source_format: 'docx',
+      verified_sha256: 'd0c1d0c2d0c3',
+      extraction_status: 'COMPLETED',
+      total_blocks: blocks.length,
+      blocks,
+      warnings: [],
+      extraction_duration_ms: 25,
+      extracted_at: new Date().toISOString(),
+    };
+
+    const normalized = normalizeExtraction(extraction);
+
+    assert.equal(normalized.normalization_status, 'COMPLETED');
+    assert.equal(normalized.sections.length, 2);
+    assert.equal(normalized.total_tables, 1);
+    assert.equal(normalized.total_lists, 1);
+
+    // Verify Table normalization
+    const sec1 = normalized.sections[0];
+    const tableNode = sec1.children.find((c) => c.type === 'table') as any;
+    assert.ok(tableNode);
+    assert.equal(tableNode.row_count, 4);
+    assert.equal(tableNode.col_count, 3);
+    assert.deepEqual(tableNode.table_data, tableData);
+
+    // Verify List normalization and individual item parsing
+    const sec2 = normalized.sections[1];
+    const listNode = sec2.children.find((c) => c.type === 'list') as any;
+    assert.ok(listNode);
+    assert.equal(listNode.items.length, 3);
+    assert.ok(listNode.items[0].text.includes('Maintain confidentiality'));
+    assert.equal(listNode.items[0].index, 1);
+  });
+
+  // Test 3: PDF Normalization with unnumbered headings, missing/inconsistent numbering
+  it('should normalize PDF with unnumbered headings and inconsistent numbering', () => {
+    const blocks: ExtractedBlock[] = [
+      {
+        block_id: 'p1',
+        type: 'heading',
+        page_number: 1,
+        text: '1. APPOINTMENT',
+      },
+      {
+        block_id: 'p2',
+        type: 'paragraph',
+        page_number: 1,
+        text: 'Client hereby appoints Consultant to provide advisory services.',
+      },
+      {
+        block_id: 'p3',
+        type: 'heading', // Unnumbered heading in between numbered sections
+        page_number: 1,
+        text: 'COMPENSATION AND EXPENSES',
+      },
+      {
+        block_id: 'p4',
+        type: 'paragraph',
+        page_number: 2,
+        text: 'Client shall reimburse Consultant for pre-approved travel expenses up to €1,200.00.',
+      },
+      {
+        block_id: 'p5',
+        type: 'heading',
+        page_number: 2,
+        text: '3. TERM AND TERMINATION', // Inconsistent numbering jump (1 -> unnumbered -> 3)
+      },
+      {
+        block_id: 'p6',
+        type: 'paragraph',
+        page_number: 2,
+        text: 'This agreement shall commence on April 1, 2026 and continue for twelve (12) months.',
+      },
+    ];
+
+    const extraction: DocumentExtractionResult = {
+      document_id: 'doc-pdf-1',
+      source_file_id: 'file-pdf-1',
+      source_format: 'pdf',
+      verified_sha256: 'pdfsha256test',
+      extraction_status: 'COMPLETED',
+      total_blocks: blocks.length,
+      blocks,
+      warnings: [],
+      extraction_duration_ms: 30,
+      extracted_at: new Date().toISOString(),
+    };
+
+    const normalized = normalizeExtraction(extraction);
+
+    assert.equal(normalized.sections.length, 3);
+    assert.equal(normalized.sections[0].title, 'APPOINTMENT');
+    assert.equal(normalized.sections[0].section_number, '1.');
+
+    assert.equal(normalized.sections[1].title, 'COMPENSATION AND EXPENSES');
+    assert.equal(normalized.sections[1].section_number, undefined);
+
+    assert.equal(normalized.sections[2].title, 'TERM AND TERMINATION');
+    assert.equal(normalized.sections[2].section_number, '3.');
+
+    // Page numbers preserved
+    assert.equal(normalized.sections[0].page_number, 1);
+    assert.equal(normalized.sections[2].children[0].page_number, 2);
+  });
+
+  // Test 4: Document with NO headings (all unclassified / preamble)
+  it('should retain all content as unclassified blocks when document has no headings', () => {
+    const blocks: ExtractedBlock[] = [
+      {
+        block_id: 'u1',
+        type: 'paragraph',
+        text: 'This Letter of Intent summarizes the terms of mutual interest between Company and Contractor.',
+      },
+      {
+        block_id: 'u2',
+        type: 'paragraph',
+        text: 'Neither party shall be bound until a definitive agreement is executed.',
+      },
+    ];
+
+    const extraction: DocumentExtractionResult = {
+      document_id: 'doc-no-head',
+      source_file_id: 'file-no-head',
+      source_format: 'txt',
+      verified_sha256: 'nohead12345',
+      extraction_status: 'COMPLETED',
+      total_blocks: blocks.length,
+      blocks,
+      warnings: [],
+      extraction_duration_ms: 5,
+      extracted_at: new Date().toISOString(),
+    };
+
+    const normalized = normalizeExtraction(extraction);
+
+    assert.equal(normalized.sections.length, 0);
+    assert.equal(normalized.unclassified_blocks.length, 2);
+    assert.equal(normalized.total_elements, 2);
+    assert.equal(normalized.unclassified_blocks[0].text, blocks[0].text);
+    assert.equal(normalized.unclassified_blocks[1].text, blocks[1].text);
+  });
+
+  // Test 5: Exact Content Preservation (no character altered)
+  it('should preserve exact contractual text, punctuation, and currency characters', () => {
+    const complexWording =
+      'Contractor agrees to indemnify, defend, and hold harmless "Company, Inc." & its affiliates from any liability, including reasonable attorneys\' fees, up to $250,000.00 (€230,000.00 / £195,000.00), pursuant to Section 12.3(a)(i).';
+
+    const blocks: ExtractedBlock[] = [
+      {
+        block_id: 'w1',
+        type: 'heading',
+        text: 'SECTION 12. INDEMNIFICATION',
+      },
+      {
+        block_id: 'w2',
+        type: 'paragraph',
+        text: complexWording,
+      },
+    ];
+
+    const extraction: DocumentExtractionResult = {
+      document_id: 'doc-exact',
+      source_file_id: 'file-exact',
+      source_format: 'docx',
+      verified_sha256: 'sha-exact-123',
+      extraction_status: 'COMPLETED',
+      total_blocks: blocks.length,
+      blocks,
+      warnings: [],
+      extraction_duration_ms: 10,
+      extracted_at: new Date().toISOString(),
+    };
+
+    const normalized = normalizeExtraction(extraction);
+
+    const paragraph = normalized.sections[0].children[0];
+    assert.equal(paragraph.text, complexWording);
+  });
+
+  // Test 6: Stable IDs (Repeated normalization yields identical IDs)
+  it('should produce identical, stable IDs across repeated normalization runs', () => {
+    const blocks: ExtractedBlock[] = [
+      { block_id: 'b1', type: 'paragraph', text: 'Preamble text.' },
+      { block_id: 'b2', type: 'heading', text: '1. SERVICES' },
+      { block_id: 'b3', type: 'paragraph', text: 'Paragraph one.' },
+      { block_id: 'b4', type: 'heading', text: '1.1 Milestones' },
+      { block_id: 'b5', type: 'paragraph', text: 'Milestone details.' },
+    ];
+
+    const extraction: DocumentExtractionResult = {
+      document_id: 'doc-stable-id',
+      source_file_id: 'file-stable-id',
+      source_format: 'txt',
+      verified_sha256: 'stableidsha',
+      extraction_status: 'COMPLETED',
+      total_blocks: blocks.length,
+      blocks,
+      warnings: [],
+      extraction_duration_ms: 8,
+      extracted_at: new Date().toISOString(),
+    };
+
+    const run1 = normalizeExtraction(extraction);
+    const run2 = normalizeExtraction(extraction);
+
+    assert.equal(run1.document_id, run2.document_id);
+    assert.equal(run1.unclassified_blocks[0].id, run2.unclassified_blocks[0].id);
+    assert.equal(run1.sections[0].id, run2.sections[0].id);
+    assert.equal(run1.sections[0].children[0].id, run2.sections[0].children[0].id);
+    assert.equal(run1.sections[0].children[1].id, run2.sections[0].children[1].id);
+  });
+});
+
+function createMockReport(
+  fileId: string,
+  metadata: any,
+  status: any = 'CLEAN_NO_KNOWN_THREATS',
+  eligible: boolean = true
+): FullSecurityReport {
+  return {
+    fileId,
+    metadata,
+    status,
+    statusMessage: status === 'CLEAN_NO_KNOWN_THREATS' ? 'Clean' : 'Threat detected',
+    eligibleForContractProcessing: eligible,
+    scanDurationMs: 15,
+    completedAt: new Date().toISOString(),
+    authenticity: {
+      passed: eligible,
+      detectedFormat: 'txt',
+      mimeMatch: true,
+      doubleExtensionDetected: false,
+      passwordProtected: false,
+      corrupted: false,
+      details: [],
+    },
+    structure: {
+      passed: eligible,
+      isZipBomb: false,
+      entryCount: 1,
+      decompressedSize: metadata.fileSize || 100,
+      decompressionRatio: 1,
+      pathTraversalAttempts: [],
+      malformedStructure: false,
+      details: [],
+    },
+    activeContent: {
+      passed: eligible,
+      hasJavaScript: false,
+      hasAutomaticActions: false,
+      hasLaunchActions: false,
+      hasEmbeddedFiles: false,
+      hasMacros: false,
+      hasOleObjects: false,
+      hasSuspiciousExternalRelationships: false,
+      hasInvalidEncoding: false,
+      details: [],
+    },
+    malware: {
+      passed: eligible,
+      engine: 'MockEngine',
+      threatsFound: eligible ? [] : ['Test.Threat'],
+      scannerAvailable: true,
+      details: [],
+    },
+    promptInjection: {
+      passed: true,
+      flaggedPatterns: [],
+      riskLevel: 'NONE',
+      details: [],
+    },
+  };
+}
+
+describe('Phase 2B Normalization Service & Lifecycle Tests', () => {
+  const sessionId = 'session-norm-user-1';
+  const otherSessionId = 'session-norm-user-attacker';
+  const validContractText = 'AGREEMENT\n1. SCOPE\nContractor performs services.\n2. PAYMENT\nRate is $100/hr.';
+  const validBuffer = Buffer.from(validContractText, 'utf8');
+
+  it('should execute end-to-end normalization after extraction on clean document', async () => {
+    clearAllCachedNormalizations();
+
+    const { fileId, metadata } = storeInQuarantine(validBuffer, 'agreement.txt', 'text/plain', sessionId);
+    const report = createMockReport(fileId, metadata, 'CLEAN_NO_KNOWN_THREATS', true);
+    saveSecurityReport(report);
+
+    // Run extraction first
+    const extractRes = await extractContractDocument(fileId, sessionId);
+    assert.equal(extractRes.success, true);
+    assert.ok(extractRes.result);
+
+    // Run normalization
+    const normRes = await normalizeContractDocument(fileId, sessionId);
+    assert.equal(normRes.success, true);
+    assert.equal(normRes.authorized, true);
+    assert.ok(normRes.result);
+    assert.equal(normRes.result.normalization_status, 'COMPLETED');
+    assert.equal(normRes.result.source_file_id, fileId);
+
+    // Subsequent retrieval from cache
+    const cacheLookup = getCachedNormalization(fileId, sessionId);
+    assert.equal(cacheLookup.authorized, true);
+    assert.equal(cacheLookup.exists, true);
+    assert.equal(cacheLookup.result?.source_file_id, fileId);
+  });
+
+  it('should reject normalization and cache lookup across different sessions', async () => {
+    const { fileId, metadata } = storeInQuarantine(validBuffer, 'private.txt', 'text/plain', sessionId);
+    const report = createMockReport(fileId, metadata, 'CLEAN_NO_KNOWN_THREATS', true);
+    saveSecurityReport(report);
+
+    await extractContractDocument(fileId, sessionId);
+    await normalizeContractDocument(fileId, sessionId);
+
+    // Attacker session attempts normalization
+    const crossNormalize = await normalizeContractDocument(fileId, otherSessionId);
+    assert.equal(crossNormalize.authorized, false);
+    assert.equal(crossNormalize.success, false);
+
+    // Attacker session attempts cache retrieval
+    const crossGet = getCachedNormalization(fileId, otherSessionId);
+    assert.equal(crossGet.authorized, false);
+    assert.equal(crossGet.exists, false);
+  });
+
+  it('should reject normalization if document has threat or is not eligible', async () => {
+    const { fileId, metadata } = storeInQuarantine(validBuffer, 'threat.txt', 'text/plain', sessionId);
+    const report = createMockReport(fileId, metadata, 'THREAT_DETECTED', false);
+    saveSecurityReport(report);
+
+    const normRes = await normalizeContractDocument(fileId, sessionId);
+    assert.equal(normRes.success, false);
+    assert.equal(normRes.authorized, true);
+    assert.ok(normRes.error?.includes('Security verification failed'));
+  });
+
+  it('should invalidate cached normalization when source document is deleted or purged', async () => {
+    const { fileId, metadata } = storeInQuarantine(validBuffer, 'delete-me.txt', 'text/plain', sessionId);
+    const report = createMockReport(fileId, metadata, 'CLEAN_NO_KNOWN_THREATS', true);
+    saveSecurityReport(report);
+
+    await extractContractDocument(fileId, sessionId);
+    const normRes = await normalizeContractDocument(fileId, sessionId);
+    assert.equal(normRes.success, true);
+
+    // Delete quarantined file
+    deleteQuarantinedFile(fileId, sessionId);
+
+    // Cache should now be empty / not found
+    const cacheLookup = getCachedNormalization(fileId, sessionId);
+    assert.equal(cacheLookup.exists, false);
+  });
+
+  it('should reject normalization if document payload has been modified or tampered with', async () => {
+    const { fileId, metadata, filePath } = storeInQuarantine(validBuffer, 'tamper-test.txt', 'text/plain', sessionId);
+    const report = createMockReport(fileId, metadata, 'CLEAN_NO_KNOWN_THREATS', true);
+    saveSecurityReport(report);
+
+    // Tamper with the physical file on disk (corrupting SHA-256 fingerprint)
+    const fs = await import('node:fs');
+    fs.writeFileSync(filePath, Buffer.from('TAMPERED MALICIOUS CONTENT'));
+
+    const normRes = await normalizeContractDocument(fileId, sessionId);
+    assert.equal(normRes.success, false);
+    assert.equal(normRes.authorized, true);
+    assert.ok(normRes.error?.includes('Integrity violation'));
+  });
+
+  it('should reject normalization if document has expired past retention period', async () => {
+    const { fileId, metadata } = storeInQuarantine(validBuffer, 'expired.txt', 'text/plain', sessionId);
+    const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+    const expiredMetadata = { ...metadata, uploadedAt: threeHoursAgo };
+
+    const report = createMockReport(fileId, expiredMetadata, 'CLEAN_NO_KNOWN_THREATS', true);
+    report.completedAt = threeHoursAgo;
+    saveSecurityReport(report);
+
+    // Purge document record simulating quarantine expiration reconciliation
+    purgeDocumentRecord(fileId);
+
+    const normRes = await normalizeContractDocument(fileId, sessionId);
+    assert.equal(normRes.success, false);
+    assert.ok(normRes.error?.includes('deleted, or has expired'));
+  });
+});

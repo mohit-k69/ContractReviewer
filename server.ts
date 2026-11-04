@@ -20,6 +20,7 @@ import {
 } from './src/server/security/sessionAuth';
 import { uploadResourceGuard } from './src/server/security/resourceProtection';
 import { extractContractDocument, getCachedExtraction } from './src/server/extraction/extractionService';
+import { normalizeContractDocument, getCachedNormalization } from './src/server/normalization/normalizationService';
 import { startClamAvDevDaemon } from './src/server/security/clamavDevDaemon';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -194,6 +195,48 @@ async function startServer() {
 
     if (!cacheLookup.exists || !cacheLookup.result) {
       return res.status(404).json({ error: cacheLookup.error || 'No extraction record found for this document.' });
+    }
+
+    return res.json(cacheLookup.result);
+  });
+
+  // 7. Document Normalization Endpoint (Phase 2B)
+  // Protected by HttpOnly cookie session auth, verifies ownership, CLEAN status, eligibility, and SHA-256 fingerprint
+  app.post('/api/contracts/:id/normalize', requireSessionAuth, async (req: AuthenticatedRequest, res) => {
+    try {
+      const fileId = req.params.id;
+      const sessionId = req.verifiedSession!.sessionId;
+
+      const normResponse = await normalizeContractDocument(fileId, sessionId);
+
+      if (!normResponse.authorized) {
+        return res.status(403).json({ error: normResponse.error || 'Access denied: Session ownership mismatch.' });
+      }
+
+      if (!normResponse.success && !normResponse.result) {
+        return res.status(400).json({ error: normResponse.error || 'Normalization failed.' });
+      }
+
+      return res.json(normResponse.result);
+    } catch (err: any) {
+      return res.status(500).json({
+        error: err.message || 'Internal error during contract document normalization.',
+      });
+    }
+  });
+
+  // 8. Cached Normalization Retrieval Endpoint
+  app.get('/api/contracts/:id/normalize', requireSessionAuth, (req: AuthenticatedRequest, res) => {
+    const fileId = req.params.id;
+    const sessionId = req.verifiedSession!.sessionId;
+
+    const cacheLookup = getCachedNormalization(fileId, sessionId);
+    if (!cacheLookup.authorized) {
+      return res.status(403).json({ error: cacheLookup.error || 'Access denied: Session ownership mismatch.' });
+    }
+
+    if (!cacheLookup.exists || !cacheLookup.result) {
+      return res.status(404).json({ error: cacheLookup.error || 'No normalized document found for this document.' });
     }
 
     return res.json(cacheLookup.result);

@@ -22,6 +22,7 @@ import {
 } from '../utils/fileValidation';
 import { FullSecurityReport } from '../server/security/types';
 import { DocumentExtractionResult, ExtractedBlock } from '../server/extraction/types';
+import { NormalizedDocument } from '../server/normalization/types';
 
 export interface UploadedContractFile {
   file: File;
@@ -32,6 +33,8 @@ export interface UploadedContractFile {
   isScanning?: boolean;
   extractionResult?: DocumentExtractionResult;
   isExtracting?: boolean;
+  normalizedDocument?: NormalizedDocument;
+  isNormalizing?: boolean;
 }
 
 interface ContractFileUploadProps {
@@ -63,6 +66,8 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
   const [showSecurityDetails, setShowSecurityDetails] = useState(false);
   const [isExtracting, setIsExtracting] = useState(false);
   const [showExtractionBlocks, setShowExtractionBlocks] = useState(false);
+  const [isNormalizing, setIsNormalizing] = useState(false);
+  const [showStructureInspector, setShowStructureInspector] = useState(true);
 
   // Initialize secure session cookie on component mount
   useEffect(() => {
@@ -195,14 +200,67 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
 
       const extractionResult: DocumentExtractionResult = await res.json();
       setIsExtracting(false);
+
+      // Auto-trigger Phase 2B normalization
+      setIsNormalizing(true);
+      let normalizedDocument: NormalizedDocument | undefined;
+      try {
+        const normRes = await fetch(`/api/contracts/${fileId}/normalize`, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        if (normRes.ok) {
+          normalizedDocument = await normRes.json();
+        }
+      } catch {
+        // Continue gracefully
+      } finally {
+        setIsNormalizing(false);
+      }
+
       onFileSelect({
         ...selectedFile,
         extractionResult,
         isExtracting: false,
+        normalizedDocument,
+        isNormalizing: false,
       });
     } catch (err: any) {
       setIsExtracting(false);
+      setIsNormalizing(false);
       setErrorMessage(err.message || 'Failed to extract contract content.');
+    }
+  };
+
+  const handleNormalizeContract = async () => {
+    if (!selectedFile?.securityReport?.fileId) return;
+    const fileId = selectedFile.securityReport.fileId;
+    setIsNormalizing(true);
+    setErrorMessage(null);
+
+    try {
+      const res = await fetch(`/api/contracts/${fileId}/normalize`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `Normalization failed with HTTP ${res.status}`);
+      }
+
+      const normalizedDocument: NormalizedDocument = await res.json();
+      setIsNormalizing(false);
+      onFileSelect({
+        ...selectedFile,
+        normalizedDocument,
+        isNormalizing: false,
+      });
+    } catch (err: any) {
+      setIsNormalizing(false);
+      setErrorMessage(err.message || 'Failed to normalize contract structure.');
     }
   };
 
@@ -544,6 +602,180 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
                     className="text-blue-600 hover:text-blue-700 hover:underline cursor-pointer"
                   >
                     Re-extract
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Phase 2B Document Structure Inspector */}
+            {selectedFile.normalizedDocument && (
+              <div className="flex flex-col gap-2 p-3.5 rounded-[16px] border border-[#E5E7EB] bg-[#FAFAFA] mt-1">
+                {/* Header */}
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="p-1.5 rounded-lg bg-indigo-50 text-indigo-600 shrink-0">
+                      <Layers className="w-4 h-4" />
+                    </div>
+                    <div className="flex flex-col min-w-0">
+                      <span className="text-xs font-semibold text-gray-900">
+                        Document Structure Inspector
+                      </span>
+                      <span className="text-[10px] text-gray-500">
+                        {selectedFile.normalizedDocument.total_sections} sections •{' '}
+                        {selectedFile.normalizedDocument.total_clauses} clauses •{' '}
+                        {selectedFile.normalizedDocument.total_paragraphs} paragraphs
+                        {selectedFile.normalizedDocument.total_tables > 0
+                          ? ` • ${selectedFile.normalizedDocument.total_tables} tables`
+                          : ''}
+                      </span>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowStructureInspector(!showStructureInspector)}
+                    className="text-[11px] text-blue-600 hover:text-blue-700 flex items-center gap-0.5 cursor-pointer font-medium"
+                    aria-label="Toggle document structure inspector"
+                  >
+                    <span>{showStructureInspector ? 'Hide' : 'Inspect'}</span>
+                    {showStructureInspector ? (
+                      <ChevronUp className="w-3.5 h-3.5" />
+                    ) : (
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    )}
+                  </button>
+                </div>
+
+                {/* Normalized hierarchy display */}
+                {showStructureInspector && (
+                  <div className="flex flex-col gap-2 mt-1 max-h-[420px] overflow-y-auto pr-0.5 text-xs">
+                    {/* Unclassified / Preamble blocks */}
+                    {selectedFile.normalizedDocument.unclassified_blocks.length > 0 && (
+                      <div className="p-2.5 rounded-[12px] bg-amber-50/50 border border-amber-200/60 flex flex-col gap-1.5">
+                        <div className="flex items-center justify-between text-[9px] font-mono text-amber-700 font-semibold uppercase tracking-wider">
+                          <span>Preamble / Document Elements ({selectedFile.normalizedDocument.unclassified_blocks.length})</span>
+                        </div>
+                        {selectedFile.normalizedDocument.unclassified_blocks.map((block) => (
+                          <div
+                            key={block.id}
+                            className="p-2 rounded-[8px] bg-white border border-amber-100 text-[11px] text-gray-700"
+                          >
+                            <div className="text-[9px] text-gray-400 font-mono mb-1">{block.id}</div>
+                            <div>{block.text}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Sections and nested clauses */}
+                    {selectedFile.normalizedDocument.sections.map((section) => (
+                      <div
+                        key={section.id}
+                        className="p-2.5 rounded-[12px] bg-white border border-[#E5E7EB] flex flex-col gap-2 text-left"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-xs text-gray-900 flex items-center gap-1.5">
+                            {section.section_number && (
+                              <span className="px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 text-[10px] font-mono font-medium">
+                                {section.section_number}
+                              </span>
+                            )}
+                            <span>{section.title}</span>
+                          </span>
+                          <span className="text-[9px] text-gray-400 font-mono">{section.id}</span>
+                        </div>
+
+                        {/* Section Children: Subsections, Clauses, Paragraphs, Tables, Lists */}
+                        <div className="flex flex-col gap-1.5 pl-2 border-l-2 border-gray-100">
+                          {section.children.map((child: any) => {
+                            if (child.type === 'clause' || child.type === 'subclause') {
+                              return (
+                                <div
+                                  key={child.id}
+                                  className="p-2 rounded-[8px] bg-gray-50/80 border border-gray-200/50 flex flex-col gap-1"
+                                >
+                                  <div className="flex items-center justify-between text-[10px]">
+                                    <span className="font-medium text-gray-900 flex items-center gap-1">
+                                      {child.clause_number && (
+                                        <span className="font-mono text-indigo-700 font-semibold">
+                                          {child.clause_number}
+                                        </span>
+                                      )}
+                                      {child.title && <span>{child.title}</span>}
+                                    </span>
+                                    <span className="text-[9px] text-gray-400 font-mono">{child.id}</span>
+                                  </div>
+                                  <div className="text-[11px] text-gray-700 leading-relaxed">
+                                    {child.text}
+                                  </div>
+                                </div>
+                              );
+                            }
+
+                            if (child.type === 'table') {
+                              return (
+                                <div
+                                  key={child.id}
+                                  className="overflow-x-auto my-1 border border-gray-200 rounded-[8px] bg-white p-1"
+                                >
+                                  <div className="text-[9px] text-gray-400 font-mono px-1 pb-1">
+                                    {child.id} • Table ({child.row_count} rows, {child.col_count} cols)
+                                  </div>
+                                  <table className="min-w-full text-[10px] divide-y divide-gray-200">
+                                    <tbody className="divide-y divide-gray-100">
+                                      {child.table_data?.map((row: string[], rIdx: number) => (
+                                        <tr key={rIdx} className={rIdx === 0 ? 'bg-gray-50 font-medium' : ''}>
+                                          {row.map((cell: string, cIdx: number) => (
+                                            <td key={cIdx} className="px-2 py-1 text-gray-700 whitespace-nowrap">
+                                              {cell}
+                                            </td>
+                                          ))}
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              );
+                            }
+
+                            if (child.type === 'list') {
+                              return (
+                                <div
+                                  key={child.id}
+                                  className="p-2 rounded-[8px] bg-gray-50/50 border border-gray-100 flex flex-col gap-1"
+                                >
+                                  <div className="text-[9px] text-gray-400 font-mono">{child.id} • List</div>
+                                  {child.items?.map((item: any) => (
+                                    <div key={item.id} className="text-[11px] text-gray-700 pl-1">
+                                      • {item.text.replace(/^[-*•]\s+/, '')}
+                                    </div>
+                                  ))}
+                                </div>
+                              );
+                            }
+
+                            return (
+                              <div key={child.id} className="text-[11px] text-gray-700 py-0.5">
+                                {child.text}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Normalized status footer */}
+                <div className="flex items-center justify-between pt-1 border-t border-gray-200/60 text-[10px] text-gray-400">
+                  <span>Normalized: {selectedFile.normalizedDocument.normalization_status}</span>
+                  <button
+                    type="button"
+                    onClick={handleNormalizeContract}
+                    disabled={isNormalizing}
+                    className="text-blue-600 hover:text-blue-700 hover:underline cursor-pointer"
+                  >
+                    {isNormalizing ? 'Normalizing...' : 'Re-normalize'}
                   </button>
                 </div>
               </div>
