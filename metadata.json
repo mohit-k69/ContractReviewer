@@ -1,0 +1,8 @@
+{
+  "name": "Contract Reviewer",
+  "description": "An AI-powered contract review application for freelancers and independent contractors.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
