@@ -77,7 +77,9 @@ writing a Vercel [Build Output](https://vercel.com/docs/build-output-api/v3):
 
 Steps:
 
-1. Import the repo in Vercel (framework preset **Other**; `vercel.json` already sets the build command).
+1. Import the repo in Vercel. Leave the detected settings as they are: `vercel.json` only overrides the build command
+   (`npm run build:vercel`). Do not add `framework`/`installCommand` overrides to `vercel.json`; a project with the Vite
+   preset rejected them.
 2. Set **`SESSION_SECRET`** (required) and, optionally, **`GEMINI_API_KEY`** in the project's environment variables.
 3. Deploy, then open `https://<your-deployment>/api/health`. It must return `{"ok":true,"runtime":"vercel-serverless",...}`.
    If `SESSION_SECRET` is missing it returns a JSON `503` that says so, instead of an opaque crash.
