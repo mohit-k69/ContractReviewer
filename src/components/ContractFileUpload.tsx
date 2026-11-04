@@ -13,6 +13,7 @@ import {
   Layers,
   AlertTriangle,
   Table,
+  Sparkles,
 } from 'lucide-react';
 import {
   ALLOWED_EXTENSIONS,
@@ -23,6 +24,7 @@ import {
 import { FullSecurityReport } from '../server/security/types';
 import { DocumentExtractionResult, ExtractedBlock } from '../server/extraction/types';
 import { NormalizedDocument } from '../server/normalization/types';
+import { ContractUnderstandingResult } from '../server/understanding/types';
 
 export interface UploadedContractFile {
   file: File;
@@ -35,6 +37,8 @@ export interface UploadedContractFile {
   isExtracting?: boolean;
   normalizedDocument?: NormalizedDocument;
   isNormalizing?: boolean;
+  understandingResult?: ContractUnderstandingResult;
+  isUnderstanding?: boolean;
 }
 
 interface ContractFileUploadProps {
@@ -68,6 +72,7 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
   const [showExtractionBlocks, setShowExtractionBlocks] = useState(false);
   const [isNormalizing, setIsNormalizing] = useState(false);
   const [showStructureInspector, setShowStructureInspector] = useState(true);
+  const [isUnderstanding, setIsUnderstanding] = useState(false);
 
   // Initialize secure session cookie on component mount
   useEffect(() => {
@@ -219,16 +224,39 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
         setIsNormalizing(false);
       }
 
+      // Auto-trigger Phase 2C understanding if normalized
+      setIsUnderstanding(true);
+      let understandingResult: ContractUnderstandingResult | undefined;
+      if (normalizedDocument) {
+        try {
+          const undRes = await fetch(`/api/contracts/${fileId}/understand`, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+          });
+          if (undRes.ok) {
+            understandingResult = await undRes.json();
+          }
+        } catch {
+          // Continue gracefully
+        } finally {
+          setIsUnderstanding(false);
+        }
+      }
+
       onFileSelect({
         ...selectedFile,
         extractionResult,
         isExtracting: false,
         normalizedDocument,
         isNormalizing: false,
+        understandingResult,
+        isUnderstanding: false,
       });
     } catch (err: any) {
       setIsExtracting(false);
       setIsNormalizing(false);
+      setIsUnderstanding(false);
       setErrorMessage(err.message || 'Failed to extract contract content.');
     }
   };
@@ -261,6 +289,37 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
     } catch (err: any) {
       setIsNormalizing(false);
       setErrorMessage(err.message || 'Failed to normalize contract structure.');
+    }
+  };
+
+  const handleUnderstandContract = async () => {
+    if (!selectedFile?.securityReport?.fileId) return;
+    const fileId = selectedFile.securityReport.fileId;
+    setIsUnderstanding(true);
+    setErrorMessage(null);
+
+    try {
+      const res = await fetch(`/api/contracts/${fileId}/understand`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `Understanding analysis failed with HTTP ${res.status}`);
+      }
+
+      const understandingResult: ContractUnderstandingResult = await res.json();
+      setIsUnderstanding(false);
+      onFileSelect({
+        ...selectedFile,
+        understandingResult,
+        isUnderstanding: false,
+      });
+    } catch (err: any) {
+      setIsUnderstanding(false);
+      setErrorMessage(err.message || 'Failed to analyze contract understanding.');
     }
   };
 
@@ -681,6 +740,59 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
                   </button>
                 </div>
               </div>
+            )}
+
+            {/* Phase 2C Understanding Status / Action Card */}
+            {selectedFile.normalizedDocument && (
+              selectedFile.understandingResult ? (
+                <div className="flex flex-col gap-2 p-3.5 rounded-[16px] border border-indigo-100 bg-indigo-50/40 mt-1">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <div className="p-1.5 rounded-lg bg-indigo-600 text-white shrink-0">
+                        <Sparkles className="w-4 h-4" />
+                      </div>
+                      <div className="flex flex-col min-w-0 text-left">
+                        <span className="text-xs font-semibold text-gray-900 truncate">
+                          {selectedFile.understandingResult.classification?.category || 'Contract Understanding'}
+                        </span>
+                        <span className="text-[10px] text-indigo-700 font-medium">
+                          {selectedFile.understandingResult.stats.verification_percentage}% Verbatim Evidence Match
+                        </span>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleUnderstandContract}
+                      disabled={isUnderstanding}
+                      className="text-[11px] text-indigo-600 hover:text-indigo-800 font-medium cursor-pointer"
+                    >
+                      {isUnderstanding ? 'Analyzing...' : 'Re-analyze'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-1">
+                  <button
+                    type="button"
+                    onClick={handleUnderstandContract}
+                    disabled={isUnderstanding}
+                    className="w-full h-11 rounded-[14px] bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 disabled:bg-indigo-400 text-white font-medium text-xs tracking-tight transition-all flex items-center justify-center gap-2 cursor-pointer shadow-sm disabled:cursor-not-allowed"
+                  >
+                    {isUnderstanding ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin text-white" />
+                        <span>Understanding contract with Gemini...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-4 h-4 text-white" />
+                        <span>Understand Contract (Gemini AI)</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              )
             )}
           </div>
         )}

@@ -21,6 +21,10 @@ import {
 import { uploadResourceGuard } from './src/server/security/resourceProtection';
 import { extractContractDocument, getCachedExtraction } from './src/server/extraction/extractionService';
 import { normalizeContractDocument, getCachedNormalization } from './src/server/normalization/normalizationService';
+import {
+  understandContractDocument,
+  getCachedUnderstanding,
+} from './src/server/understanding/understandingService';
 import { startClamAvDevDaemon } from './src/server/security/clamavDevDaemon';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -237,6 +241,48 @@ async function startServer() {
 
     if (!cacheLookup.exists || !cacheLookup.result) {
       return res.status(404).json({ error: cacheLookup.error || 'No normalized document found for this document.' });
+    }
+
+    return res.json(cacheLookup.result);
+  });
+
+  // 9. Contract Understanding Endpoint (Phase 2C)
+  // Invokes Google Gemini to extract factual contract understanding from normalized structure
+  app.post('/api/contracts/:id/understand', requireSessionAuth, async (req: AuthenticatedRequest, res) => {
+    try {
+      const fileId = req.params.id;
+      const sessionId = req.verifiedSession!.sessionId;
+
+      const understandingResponse = await understandContractDocument(fileId, sessionId);
+
+      if (!understandingResponse.authorized) {
+        return res.status(403).json({ error: understandingResponse.error || 'Access denied: Session ownership mismatch.' });
+      }
+
+      if (!understandingResponse.success && !understandingResponse.result) {
+        return res.status(400).json({ error: understandingResponse.error || 'Contract understanding failed.' });
+      }
+
+      return res.json(understandingResponse.result);
+    } catch (err: any) {
+      return res.status(500).json({
+        error: err.message || 'Internal error during contract understanding.',
+      });
+    }
+  });
+
+  // 10. Cached Understanding Retrieval Endpoint
+  app.get('/api/contracts/:id/understand', requireSessionAuth, (req: AuthenticatedRequest, res) => {
+    const fileId = req.params.id;
+    const sessionId = req.verifiedSession!.sessionId;
+
+    const cacheLookup = getCachedUnderstanding(fileId, sessionId);
+    if (!cacheLookup.authorized) {
+      return res.status(403).json({ error: cacheLookup.error || 'Access denied: Session ownership mismatch.' });
+    }
+
+    if (!cacheLookup.exists || !cacheLookup.result) {
+      return res.status(404).json({ error: cacheLookup.error || 'No understanding record found for this document.' });
     }
 
     return res.json(cacheLookup.result);
