@@ -32,6 +32,12 @@ import {
 } from './longDocumentProcessor';
 import { validateGeminiUnderstandingResponse } from './responseValidator';
 import {
+  serializeNormalizedDocument,
+  SHARED_CONTEXT_BEGIN,
+  SHARED_CONTEXT_END,
+  SECTIONS_UNDER_ANALYSIS_MARKER,
+} from './promptBuilder';
+import {
   understandContractDocument,
   getCachedUnderstanding,
   clearAllCachedUnderstandings,
@@ -1040,6 +1046,164 @@ test.describe('Phase 2C — AI-Powered Contract Understanding Engine Tests', () 
       );
       // Fallback result still passes 100% evidence verification
       assert.equal(result.stats.verification_percentage, 100);
+    } finally {
+      setGeminiGeneratorMock(null);
+    }
+  });
+
+  test('21. Long Document Chunker: Preamble is shared as read-only context with every later chunk (original IDs preserved)', () => {
+    const { normalized } = createFreelanceContractFixture();
+    const chunks = chunkNormalizedDocument(normalized, 400);
+    assert.ok(chunks.length > 2, 'fixture should split into several chunks');
+
+    const preamble = normalized.unclassified_blocks;
+
+    // Chunk 0 analyzes the preamble itself; it needs no separate shared context.
+    assert.deepEqual(chunks[0].docSubset.unclassified_blocks, preamble);
+    assert.deepEqual(chunks[0].sharedContext, []);
+
+    for (const chunk of chunks.slice(1)) {
+      // Preamble is NOT part of the content analyzed by later chunks...
+      assert.deepEqual(chunk.docSubset.unclassified_blocks, []);
+      // ...but is available as shared context with identical objects/IDs.
+      assert.equal(chunk.sharedContext.length, preamble.length);
+      chunk.sharedContext.forEach((b, i) => {
+        assert.equal(b, preamble[i], 'shared context must be the original block, not a copy');
+        assert.equal(b.id, 'preamble-1');
+        assert.deepEqual(b.source_block_ids, ['block-1', 'block-2']);
+      });
+    }
+
+    // The preamble still carries the parties and effective date.
+    const text = chunks[chunks.length - 1].sharedContext.map((b) => b.text).join(' ');
+    assert.match(text, /Apex Media Labs Inc\./);
+    assert.match(text, /Elena Vance/);
+    assert.match(text, /October 1, 2025/);
+  });
+
+  test('22. Long Document Chunker: Shared context is never counted as a section or in coverage', () => {
+    const { normalized } = createFreelanceContractFixture();
+    const chunks = chunkNormalizedDocument(normalized, 400);
+
+    const sectionIds = new Set(normalized.sections.map((s) => s.id));
+    const analyzed = chunks.flatMap((c) => c.sectionIds);
+    // Each section analyzed exactly once, in order; no preamble IDs among them.
+    assert.deepEqual(analyzed, normalized.sections.map((s) => s.id));
+    assert.equal(new Set(analyzed).size, analyzed.length);
+    for (const id of analyzed) assert.ok(sectionIds.has(id));
+    assert.ok(!analyzed.includes('preamble-1'));
+
+    // Each chunk's docSubset sections match its sectionIds exactly.
+    for (const c of chunks) {
+      assert.deepEqual(c.docSubset.sections.map((s) => s.id), c.sectionIds);
+    }
+  });
+
+  test('23. Long Document Chunker: Single-chunk documents carry no duplicate shared context', () => {
+    const { normalized } = createFreelanceContractFixture();
+    const chunks = chunkNormalizedDocument(normalized, 1_000_000);
+    assert.equal(chunks.length, 1);
+    assert.deepEqual(chunks[0].sharedContext, []);
+    assert.deepEqual(chunks[0].docSubset.unclassified_blocks, normalized.unclassified_blocks);
+  });
+
+  test('24. Long Document Chunker: A very large preamble still lets chunking make progress', () => {
+    const { normalized } = createFreelanceContractFixture();
+    const bigPreamble = {
+      ...normalized,
+      unclassified_blocks: [
+        {
+          ...normalized.unclassified_blocks[0],
+          text: normalized.unclassified_blocks[0].text + ' ' + 'x'.repeat(5000),
+        },
+      ],
+    };
+    const chunks = chunkNormalizedDocument(bigPreamble, 400);
+    // No infinite loop / no dropped sections, and every later chunk keeps the preamble.
+    assert.deepEqual(chunks.flatMap((c) => c.sectionIds), normalized.sections.map((s) => s.id));
+    assert.ok(chunks.length > 1);
+    for (const c of chunks.slice(1)) assert.equal(c.sharedContext.length, 1);
+  });
+
+  test('25. Serializer: Shared context is fenced and distinct from sections under analysis', () => {
+    const { normalized } = createFreelanceContractFixture();
+    const chunks = chunkNormalizedDocument(normalized, 400);
+    const later = chunks[1];
+    const out = serializeNormalizedDocument(later.docSubset, later.sharedContext);
+
+    const begin = out.indexOf(SHARED_CONTEXT_BEGIN);
+    const end = out.indexOf(SHARED_CONTEXT_END);
+    const analysis = out.indexOf(SECTIONS_UNDER_ANALYSIS_MARKER);
+    assert.ok(begin >= 0 && begin < end && end < analysis, 'shared context precedes analysis marker');
+
+    const shared = out.slice(begin, end);
+    // Original IDs are preserved inside the shared block; no section content leaks in.
+    assert.match(shared, /ELEMENT:preamble-1 BLOCKS:block-1,block-2/);
+    assert.match(shared, /Apex Media Labs Inc\./);
+    assert.ok(!shared.includes('=== [ELEMENT:sec-'));
+
+    // Analyzed sections appear only after the marker, and the preamble is not repeated there.
+    const afterMarker = out.slice(analysis);
+    assert.ok(afterMarker.includes(`ELEMENT:${later.sectionIds[0]} `));
+    assert.ok(!afterMarker.includes('ELEMENT:preamble-1'));
+    assert.ok(!afterMarker.includes('PREAMBLE & UNCLASSIFIED BLOCKS'));
+
+    // Chunk 0 keeps the original unfenced preamble rendering.
+    const first = serializeNormalizedDocument(chunks[0].docSubset, chunks[0].sharedContext);
+    assert.ok(first.includes('PREAMBLE & UNCLASSIFIED BLOCKS'));
+    assert.ok(!first.includes(SHARED_CONTEXT_BEGIN));
+  });
+
+  test('26. Long-document Gemini flow: later chunk prompts include the preamble as shared context; coverage and evidence are not double-counted', async () => {
+    const { normalized, extraction } = createFreelanceContractFixture();
+    const prompts: string[] = [];
+    const baseline = analyzeContractDeterministically(normalized);
+
+    // Inflate section text so the document exceeds the default chunk limit.
+    const inflated: NormalizedDocument = {
+      ...normalized,
+      sections: normalized.sections.map((sec) => ({
+        ...sec,
+        children: sec.children.map((c: any) => ({ ...c, text: c.text + ' ' + 'filler '.repeat(120) })),
+      })) as NormalizedSection[],
+    };
+    const chunks = chunkNormalizedDocument(inflated);
+    assert.ok(chunks.length > 1, 'inflated document should be chunked at the default limit');
+
+    setGeminiGeneratorMock(async (prompt: string) => {
+      prompts.push(prompt);
+      // Same preamble-derived evidence returned by every chunk to simulate re-citing shared context.
+      const { stats, analyzed_at, ...payload } = baseline as any;
+      return JSON.stringify(payload);
+    });
+
+    try {
+      const result = await understandContractWithGemini(inflated, extraction);
+
+      assert.equal(prompts.length, chunks.length);
+      // First chunk: preamble analyzed directly, not as shared context.
+      assert.ok(!prompts[0].includes(SHARED_CONTEXT_BEGIN));
+      assert.ok(prompts[0].includes('PREAMBLE & UNCLASSIFIED BLOCKS'));
+      // Later chunks: preamble supplied as fenced shared context with instructions.
+      for (const prompt of prompts.slice(1)) {
+        assert.ok(prompt.includes(SHARED_CONTEXT_BEGIN));
+        assert.ok(prompt.includes('Apex Media Labs Inc.'));
+        assert.ok(prompt.includes('READ-ONLY context'));
+      }
+
+      // Coverage counts real sections only: never more than the document's sections.
+      assert.equal(result.total_sections_in_document, inflated.sections.length);
+      assert.equal(result.processed_sections!.length, inflated.sections.length);
+      assert.ok(!result.processed_sections!.includes('preamble-1'));
+      assert.equal(result.coverage_percentage, 100);
+
+      // Parties re-reported by every chunk are deduplicated, with deduplicated evidence.
+      const names = result.parties.map((p) => p.name.toLowerCase());
+      assert.equal(new Set(names).size, names.length);
+      for (const party of result.parties) {
+        const keys = party.evidence.map((e) => `${e.element_id}|${e.source_block_id}|${e.exact_quote}`);
+        assert.equal(new Set(keys).size, keys.length);
+      }
     } finally {
       setGeminiGeneratorMock(null);
     }

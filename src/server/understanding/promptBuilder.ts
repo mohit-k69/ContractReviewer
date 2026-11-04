@@ -7,11 +7,25 @@ import {
   NormalizedTable,
 } from '../normalization/types';
 
+export const SHARED_CONTEXT_BEGIN =
+  '=== [SHARED CONTEXT - READ-ONLY PREAMBLE, NOT A SECTION UNDER ANALYSIS] ===';
+export const SHARED_CONTEXT_END = '=== [END SHARED CONTEXT] ===';
+export const SECTIONS_UNDER_ANALYSIS_MARKER = '=== [SECTIONS UNDER ANALYSIS IN THIS CHUNK] ===';
+
+export interface ChunkPromptInfo {
+  chunkIndex: number;
+  totalChunks: number;
+  hasSharedContext: boolean;
+}
+
 /**
  * Serializes the normalized document into a structural textual representation
  * clearly tagged with element IDs and source block IDs for Gemini to reference.
  */
-export function serializeNormalizedDocument(doc: NormalizedDocument): string {
+export function serializeNormalizedDocument(
+  doc: NormalizedDocument,
+  sharedContext: NormalizedDocument['unclassified_blocks'] = []
+): string {
   const lines: string[] = [];
 
   function serializeNode(node: any, depth = 0) {
@@ -62,6 +76,17 @@ export function serializeNormalizedDocument(doc: NormalizedDocument): string {
     }
   }
 
+  // Shared context (preamble supplied to later chunks): clearly fenced as
+  // read-only reference material, never as a section under analysis.
+  if (sharedContext.length > 0) {
+    lines.push(SHARED_CONTEXT_BEGIN);
+    for (const block of sharedContext) {
+      serializeNode(block, 0);
+    }
+    lines.push(SHARED_CONTEXT_END);
+    lines.push(SECTIONS_UNDER_ANALYSIS_MARKER);
+  }
+
   // Serialize unclassified blocks first
   if (doc.unclassified_blocks && doc.unclassified_blocks.length > 0) {
     lines.push('=== [PREAMBLE & UNCLASSIFIED BLOCKS] ===');
@@ -107,8 +132,25 @@ CRITICAL SECURITY & BEHAVIORAL DIRECTIVES:
 OUTPUT FORMAT REQUIREMENTS:
 You must respond with a single, valid JSON object matching this schema. No markdown formatting outside of JSON.`;
 
-export function buildUnderstandingPrompt(serializedDoc: string): string {
-  return `Please analyze the following normalized contract document and return a complete contract understanding JSON.
+function buildChunkInstructions(info?: ChunkPromptInfo): string {
+  if (!info || info.totalChunks <= 1) return '';
+  const lines = [
+    `This is chunk ${info.chunkIndex + 1} of ${info.totalChunks} of a long contract. Other chunks are analyzed separately and merged afterwards.`,
+  ];
+  if (info.hasSharedContext) {
+    lines.push(
+      `The block between "${SHARED_CONTEXT_BEGIN}" and "${SHARED_CONTEXT_END}" is the contract preamble, supplied as READ-ONLY context. Use it only to identify the contracting parties, defined terms, and dates when interpreting the sections under analysis.`,
+      'Do NOT treat the shared context as a section of this chunk, and do NOT re-extract facts that appear only in the shared context (they are extracted from the first chunk). You may cite shared-context elements as evidence using their original ELEMENT and BLOCKS IDs when a fact in the analyzed sections depends on them.'
+    );
+  }
+  lines.push(
+    'Extract facts only from the sections under analysis. If a provision is not present in this chunk, report it as NOT_FOUND; it may appear in another chunk.'
+  );
+  return lines.join('\n') + '\n\n';
+}
+
+export function buildUnderstandingPrompt(serializedDoc: string, chunkInfo?: ChunkPromptInfo): string {
+  return `${buildChunkInstructions(chunkInfo)}Please analyze the following normalized contract document and return a complete contract understanding JSON.
 
 <untrusted_contract_document>
 ${serializedDoc}

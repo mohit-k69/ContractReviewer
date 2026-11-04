@@ -22,16 +22,52 @@ import {
 // Default chunk character boundary
 export const CHUNK_CHAR_LIMIT = 3500;
 
+export type PreambleBlock = NormalizedDocument['unclassified_blocks'][number];
+
 export interface DocumentChunk {
   chunkIndex: number;
   totalChunks: number;
+  /**
+   * IDs of the sections ANALYZED in this chunk. This is the only source of
+   * truth for coverage accounting; shared context is never included here.
+   */
   sectionIds: string[];
+  /**
+   * The content this chunk is responsible for analyzing. `sections` is the
+   * chunk's own slice; `unclassified_blocks` holds the preamble only when the
+   * preamble is itself analyzed here (chunk 0 / single-chunk documents).
+   */
   docSubset: NormalizedDocument;
+  /**
+   * Read-only preamble / unclassified blocks supplied to chunks that do NOT
+   * analyze them (chunk 1..n) so party names, defined terms and effective
+   * dates stay available. These are the original block objects (original
+   * element IDs and source block IDs preserved) and are NOT sections under
+   * analysis. Empty when the preamble is already part of `docSubset`.
+   */
+  sharedContext: PreambleBlock[];
+}
+
+function textLength(node: { text?: string } | undefined): number {
+  return node?.text?.length || 0;
+}
+
+function sectionCharCount(sec: NormalizedSection): number {
+  let len = textLength(sec);
+  if (sec.children) {
+    len += sec.children.reduce((acc: number, c: any) => acc + textLength(c), 0);
+  }
+  return len;
 }
 
 /**
  * Splits a normalized document into bounded structural chunks
  * preserving original element IDs, block IDs, and section hierarchy.
+ *
+ * The preamble / unclassified blocks may hold party names, effective dates and
+ * defined terms. They are analyzed once (in chunk 0) and supplied to every
+ * later chunk as read-only `sharedContext`, so they are never lost and never
+ * counted as a section or analyzed twice.
  */
 export function chunkNormalizedDocument(
   doc: NormalizedDocument,
@@ -39,18 +75,12 @@ export function chunkNormalizedDocument(
 ): DocumentChunk[] {
   const sections = doc.sections || [];
   const unclassified = doc.unclassified_blocks || [];
+  const preambleChars = unclassified.reduce((acc, b) => acc + textLength(b), 0);
+
+  const totalDocChars =
+    preambleChars + sections.reduce((acc, s) => acc + sectionCharCount(s), 0);
 
   // If document is small enough to fit within one chunk, return single chunk
-  const totalDocChars =
-    unclassified.reduce((acc, b) => acc + (b.text?.length || 0), 0) +
-    sections.reduce((acc, s) => {
-      let len = s.text?.length || 0;
-      if (s.children) {
-        len += s.children.reduce((cAcc: number, c: any) => cAcc + (c.text?.length || 0), 0);
-      }
-      return acc + len;
-    }, 0);
-
   if (totalDocChars <= maxChunkChars && sections.length <= 4) {
     return [
       {
@@ -58,64 +88,51 @@ export function chunkNormalizedDocument(
         totalChunks: 1,
         sectionIds: sections.map((s) => s.id),
         docSubset: doc,
+        sharedContext: [],
       },
     ];
   }
 
+  // Every chunk carries the preamble (as primary content in chunk 0, as shared
+  // context afterwards), so reserve its size in each chunk's budget. A floor of
+  // half the limit guarantees progress even with a very large preamble.
+  const sectionBudget = Math.max(maxChunkChars - preambleChars, Math.floor(maxChunkChars / 2));
+
   const chunks: DocumentChunk[] = [];
   let currentSections: NormalizedSection[] = [];
-  let currentSectionIds: string[] = [];
   let currentCharCount = 0;
 
-  // First chunk always includes unclassified blocks (preamble)
-  const firstChunkUnclassified = [...unclassified];
-  currentCharCount += firstChunkUnclassified.reduce((acc, b) => acc + (b.text?.length || 0), 0);
-
-  for (let i = 0; i < sections.length; i++) {
-    const sec = sections[i];
-    let secChars = sec.text?.length || 0;
-    if (sec.children) {
-      secChars += sec.children.reduce((acc: number, c: any) => acc + (c.text?.length || 0), 0);
-    }
-
-    // If adding this section exceeds threshold and current chunk has at least one section, push chunk
-    if (currentCharCount + secChars > maxChunkChars && currentSections.length > 0) {
-      chunks.push({
-        chunkIndex: chunks.length,
-        totalChunks: 0, // Will be set after loop
-        sectionIds: [...currentSectionIds],
-        docSubset: {
-          ...doc,
-          sections: [...currentSections],
-          unclassified_blocks: chunks.length === 0 ? firstChunkUnclassified : [],
-        },
-      });
-
-      currentSections = [];
-      currentSectionIds = [];
-      currentCharCount = 0;
-    }
-
-    currentSections.push(sec);
-    currentSectionIds.push(sec.id);
-    currentCharCount += secChars;
-  }
-
-  // Push remainder chunk
-  if (currentSections.length > 0 || chunks.length === 0) {
+  const flush = () => {
+    const isFirst = chunks.length === 0;
     chunks.push({
       chunkIndex: chunks.length,
-      totalChunks: 0,
-      sectionIds: [...currentSectionIds],
+      totalChunks: 0, // Set after loop
+      sectionIds: currentSections.map((s) => s.id),
       docSubset: {
         ...doc,
         sections: [...currentSections],
-        unclassified_blocks: chunks.length === 0 ? firstChunkUnclassified : [],
+        // Preamble is analyzed exactly once, in the first chunk.
+        unclassified_blocks: isFirst ? [...unclassified] : [],
       },
+      sharedContext: isFirst ? [] : [...unclassified],
     });
+    currentSections = [];
+    currentCharCount = 0;
+  };
+
+  for (const sec of sections) {
+    const secChars = sectionCharCount(sec);
+    if (currentCharCount + secChars > sectionBudget && currentSections.length > 0) {
+      flush();
+    }
+    currentSections.push(sec);
+    currentCharCount += secChars;
   }
 
-  // Update totalChunks across all chunks
+  if (currentSections.length > 0 || chunks.length === 0) {
+    flush();
+  }
+
   const total = chunks.length;
   chunks.forEach((c) => {
     c.totalChunks = total;

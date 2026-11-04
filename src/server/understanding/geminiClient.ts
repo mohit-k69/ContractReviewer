@@ -105,8 +105,12 @@ export async function understandContractWithGemini(
   let fallbackReason = '';
 
   for (const chunk of chunks) {
-    const serializedDoc = serializeNormalizedDocument(chunk.docSubset);
-    const userPrompt = buildUnderstandingPrompt(serializedDoc);
+    const serializedDoc = serializeNormalizedDocument(chunk.docSubset, chunk.sharedContext);
+    const userPrompt = buildUnderstandingPrompt(serializedDoc, {
+      chunkIndex: chunk.chunkIndex,
+      totalChunks: chunk.totalChunks,
+      hasSharedContext: chunk.sharedContext.length > 0,
+    });
 
     try {
       let rawText = '';
