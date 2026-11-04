@@ -130,7 +130,7 @@ test('3. Fails closed (SCAN_FAILED) when ClamAV scanner returns invalid/unexpect
 
     assert.equal(report.status, 'SCAN_FAILED');
     assert.equal(report.eligibleForContractProcessing, false);
-    assert.match(report.statusMessage, /unexpected or invalid response/);
+    assert.match(report.statusMessage, /malformed, incomplete or unexpected response/);
   } finally {
     await mockAV.close();
   }

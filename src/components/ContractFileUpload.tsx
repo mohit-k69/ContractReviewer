@@ -16,7 +16,7 @@ import {
   MAX_FILE_SIZE_MB,
   validateContractFile,
 } from '../utils/fileValidation';
-import { FullSecurityReport, SecurityStatus } from '../server/security/types';
+import { FullSecurityReport } from '../server/security/types';
 
 export interface UploadedContractFile {
   file: File;
@@ -32,21 +32,17 @@ interface ContractFileUploadProps {
   onFileSelect: (file: UploadedContractFile | null) => void;
 }
 
-async function getOrFetchSessionToken(): Promise<string> {
-  let token = sessionStorage.getItem('fineprint_session_token');
-  if (!token) {
-    try {
-      const res = await fetch('/api/auth/session');
-      const data = await res.json();
-      if (data.sessionToken) {
-        token = data.sessionToken;
-        sessionStorage.setItem('fineprint_session_token', token as string);
-      }
-    } catch {
-      // Handled in caller
-    }
+// Ensures a valid server-side HttpOnly session cookie exists
+async function ensureSessionEstablished(): Promise<boolean> {
+  try {
+    const res = await fetch('/api/auth/session', {
+      method: 'GET',
+      credentials: 'same-origin',
+    });
+    return res.ok;
+  } catch {
+    return false;
   }
-  return token || '';
 }
 
 export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
@@ -58,6 +54,11 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [showSecurityDetails, setShowSecurityDetails] = useState(false);
+
+  // Initialize secure session cookie on component mount
+  useEffect(() => {
+    ensureSessionEstablished();
+  }, []);
 
   const handleFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -81,17 +82,16 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
     };
     onFileSelect(initialFileData);
 
-    // Send to backend security inspection pipeline
     try {
+      await ensureSessionEstablished();
+
       const formData = new FormData();
       formData.append('file', file);
 
-      const sessionToken = await getOrFetchSessionToken();
+      // Authenticated purely via HttpOnly cookie (credentials: 'same-origin')
       const res = await fetch('/api/contracts/upload', {
         method: 'POST',
-        headers: {
-          'x-session-token': sessionToken,
-        },
+        credentials: 'same-origin',
         body: formData,
       });
 
@@ -149,10 +149,9 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
     e.stopPropagation();
     if (selectedFile?.securityReport?.fileId) {
       try {
-        const sessionToken = await getOrFetchSessionToken();
         await fetch(`/api/contracts/${selectedFile.securityReport.fileId}`, {
           method: 'DELETE',
-          headers: { 'x-session-token': sessionToken },
+          credentials: 'same-origin',
         });
       } catch {
         // Continue cleanup

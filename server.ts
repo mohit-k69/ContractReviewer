@@ -8,12 +8,17 @@ import {
   getSecurityReport,
   deleteQuarantinedFile,
   initQuarantineStorage,
+  reconcileQuarantineOnStartup,
 } from './src/server/security/quarantineManager';
 import {
   requireSessionAuth,
   createSignedSessionToken,
+  attachSessionCookie,
+  rateLimitSessionIssuance,
+  verifyOriginProtection,
   AuthenticatedRequest,
 } from './src/server/security/sessionAuth';
+import { uploadResourceGuard } from './src/server/security/resourceProtection';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,11 +26,20 @@ const __dirname = path.dirname(__filename);
 async function startServer() {
   initQuarantineStorage();
 
+  // Reconcile quarantine files across server restarts (purges expired >2h, restores valid)
+  const reconciliation = reconcileQuarantineOnStartup();
+  console.log(
+    `[QuarantineReconciliation] Restored: ${reconciliation.restored}, Purged expired: ${reconciliation.purged}, Failed: ${reconciliation.failed}`
+  );
+
   const app = express();
   const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
   const isProd = process.env.NODE_ENV === 'production';
 
   app.use(express.json());
+
+  // Apply Origin / Referer CSRF protection on state-changing requests
+  app.use(verifyOriginProtection);
 
   // Configure Multer memory storage (never write untrusted files to public disk)
   const upload = multer({
@@ -35,21 +49,20 @@ async function startServer() {
     },
   });
 
-  // 1. Session Token Issuance Endpoint
-  app.get('/api/auth/session', (_req, res) => {
+  // 1. Session Issuance Endpoint
+  // Rate-limited, sets HttpOnly/SameSite=Strict cookie, does NOT leak token in JSON response
+  app.get('/api/auth/session', rateLimitSessionIssuance, (_req, res) => {
     const token = createSignedSessionToken();
-    res.setHeader(
-      'Set-Cookie',
-      `fineprint_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400`
-    );
-    res.json({ sessionToken: token });
+    attachSessionCookie(res, token);
+    res.json({ success: true, message: 'Secure session established.' });
   });
 
   // 2. Upload & Security Inspection Endpoint
-  // Strictly requires cryptographically verified session token (no default-session fallback)
+  // Protected by HttpOnly cookie session, upload concurrency guard, rate limits, and 30s timeout
   app.post(
     '/api/contracts/upload',
     requireSessionAuth,
+    uploadResourceGuard,
     (req, res, next) => {
       upload.single('file')(req, res, (err) => {
         if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
