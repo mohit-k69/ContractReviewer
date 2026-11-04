@@ -3,6 +3,7 @@ import {
   NormalizedSection,
 } from '../normalization/types';
 import { DocumentExtractionResult } from '../extraction/types';
+import { compareFoundFacts } from './conflictDetector';
 import {
   AmbiguityOrConflict,
   ContractClassification,
@@ -157,9 +158,32 @@ function deduplicateEvidence(refs: EvidenceReference[]): EvidenceReference[] {
   return out;
 }
 
+const PARTIAL_COVERAGE_PLACEHOLDER: FactWithEvidence = {
+  status: 'AMBIGUOUS',
+  summary: 'Provision not identified in analyzed chunks (document coverage was partial).',
+  evidence: [],
+};
+
+/** Statuses that carry an actual finding the merge must never lose. */
+const FINDING_RANK: Partial<Record<EvidenceStatus, number>> = {
+  CONFLICTING: 3,
+  AMBIGUOUS: 2,
+  FOUND: 1,
+};
+
+function isEmptyPlaceholder(f: FactWithEvidence): boolean {
+  return f.status === 'AMBIGUOUS' && (f.evidence || []).length === 0;
+}
+
 /**
  * Merges two FactWithEvidence instances deterministically.
- * Detects conflicts between differing FOUND statements across chunks.
+ *
+ * Two FOUND facts are NOT conflicting merely because they are worded
+ * differently: they are compared by `compareFoundFacts` (same topic, same
+ * situation, comparable value). Compatible facts keep all their evidence;
+ * genuine incompatibilities become CONFLICTING; undecidable ones AMBIGUOUS.
+ * Existing CONFLICTING / AMBIGUOUS findings are never overwritten by a later
+ * FOUND / NOT_FOUND chunk result.
  * Enforces rule: Cannot be NOT_FOUND unless fully covered.
  */
 export function mergeFactWithEvidence(
@@ -179,37 +203,15 @@ export function mergeFactWithEvidence(
     };
   }
 
-  if (!existingFact) {
-    if (newFact!.status === 'NOT_FOUND' && !fullCoverage) {
-      return {
-        status: 'AMBIGUOUS',
-        summary: 'Provision not identified in analyzed chunks (document coverage was partial).',
-        evidence: [],
-      };
+  const only = existingFact || newFact;
+  if (!existingFact || !newFact) {
+    if (only!.status === 'NOT_FOUND' && !fullCoverage) {
+      return { ...PARTIAL_COVERAGE_PLACEHOLDER, evidence: [] };
     }
-    return newFact!;
+    return only!;
   }
 
-  if (!newFact) {
-    if (existingFact.status === 'NOT_FOUND' && !fullCoverage) {
-      return {
-        status: 'AMBIGUOUS',
-        summary: 'Provision not identified in analyzed chunks (document coverage was partial).',
-        evidence: [],
-      };
-    }
-    return existingFact;
-  }
-
-  // If one is FOUND and the other is NOT_FOUND, FOUND wins!
-  if (existingFact.status === 'FOUND' && newFact.status === 'NOT_FOUND') {
-    return existingFact;
-  }
-  if (newFact.status === 'FOUND' && existingFact.status === 'NOT_FOUND') {
-    return newFact;
-  }
-
-  // If both are NOT_FOUND
+  // Both NOT_FOUND
   if (existingFact.status === 'NOT_FOUND' && newFact.status === 'NOT_FOUND') {
     if (!fullCoverage) {
       return {
@@ -221,42 +223,70 @@ export function mergeFactWithEvidence(
     return existingFact;
   }
 
-  // If both are FOUND, check for contradiction or merge evidence
-  if (existingFact.status === 'FOUND' && newFact.status === 'FOUND') {
-    const combinedEvidence = deduplicateEvidence([
-      ...(existingFact.evidence || []),
-      ...(newFact.evidence || []),
-    ]);
+  // A real finding beats NOT_FOUND / NOT_APPLICABLE / empty partial-coverage placeholders.
+  const rankOf = (f: FactWithEvidence) =>
+    isEmptyPlaceholder(f) ? 0 : FINDING_RANK[f.status] || 0;
+  const rankExisting = rankOf(existingFact);
+  const rankNew = rankOf(newFact);
+  if (rankExisting === 0 || rankNew === 0) {
+    if (rankExisting === 0 && rankNew === 0) return existingFact;
+    return rankExisting === 0 ? newFact : existingFact;
+  }
 
+  const combinedEvidence = deduplicateEvidence([
+    ...(existingFact.evidence || []),
+    ...(newFact.evidence || []),
+  ]);
+
+  // Two FOUND facts: decide compatible / conflicting / undecidable.
+  if (existingFact.status === 'FOUND' && newFact.status === 'FOUND') {
     const s1 = existingFact.summary.trim().toLowerCase();
     const s2 = newFact.summary.trim().toLowerCase();
 
-    // Check if summaries contradict each other
-    if (s1 !== s2 && !s1.includes(s2) && !s2.includes(s1)) {
-      const conflictDescription = `Conflicting terms detected across document sections: "${existingFact.summary}" vs "${newFact.summary}".`;
-      conflictsOut.push({
-        topic: topicName,
-        description: conflictDescription,
-        evidence: combinedEvidence,
-      });
-
+    if (s1 === s2 || s1.includes(s2) || s2.includes(s1)) {
       return {
-        status: 'CONFLICTING',
-        summary: conflictDescription,
+        status: 'FOUND',
+        summary: existingFact.summary.length >= newFact.summary.length ? existingFact.summary : newFact.summary,
         evidence: combinedEvidence,
-        notes: `Cross-section contradiction between: [${existingFact.summary}] and [${newFact.summary}]`,
       };
     }
 
+    const relation = compareFoundFacts(topicName, existingFact, newFact);
+
+    if (relation.kind === 'CONFLICT') {
+      const description = `Conflicting terms for ${topicName} across document sections (${relation.detail}): "${existingFact.summary}" vs "${newFact.summary}".`;
+      conflictsOut.push({ topic: topicName, description, evidence: combinedEvidence });
+      return {
+        status: 'CONFLICTING',
+        summary: description,
+        evidence: combinedEvidence,
+        notes: `Incompatible provisions: [${existingFact.summary}] and [${newFact.summary}]`,
+      };
+    }
+
+    if (relation.kind === 'UNCERTAIN') {
+      const description = `Unable to confirm whether provisions for ${topicName} are compatible (${relation.detail}): "${existingFact.summary}" and "${newFact.summary}".`;
+      conflictsOut.push({ topic: topicName, description, evidence: combinedEvidence });
+      return {
+        status: 'AMBIGUOUS',
+        summary: description,
+        evidence: combinedEvidence,
+        notes: `Review provisions: [${existingFact.summary}] and [${newFact.summary}]`,
+      };
+    }
+
+    // Compatible: keep both statements and all evidence.
     return {
       status: 'FOUND',
-      summary: existingFact.summary.length >= newFact.summary.length ? existingFact.summary : newFact.summary,
+      summary: `${existingFact.summary.trim()}; ${newFact.summary.trim()}`,
       evidence: combinedEvidence,
     };
   }
 
-  // Default fallback merge
-  return existingFact.status === 'FOUND' ? existingFact : newFact;
+  // At least one side is already AMBIGUOUS / CONFLICTING: keep the stronger
+  // finding (it is sticky) and attach the other side's evidence.
+  const winner = rankExisting >= rankNew ? existingFact : newFact;
+  return { ...winner, evidence: combinedEvidence };
 }
 
 /**
@@ -311,13 +341,34 @@ export function mergeChunkResults(
       ? 100
       : Math.round((processedSections.length / totalDocumentSections) * 100);
 
-  // 1. Classification (select result with highest confidence)
+  // Helper to merge facts across all chunks
+  function mergeAcrossChunks(
+    extractFact: (r: ContractUnderstandingResult) => FactWithEvidence | undefined,
+    topic: string
+  ): FactWithEvidence {
+    let acc: FactWithEvidence | undefined;
+    for (const cr of chunkResults) {
+      const f = extractFact(cr);
+      acc = mergeFactWithEvidence(acc, f, topic, isFullCoverage, crossChunkConflicts);
+    }
+    return acc!;
+  }
+
+  // 1. Classification (select result with highest confidence; governing
+  //    jurisdiction is merged across all chunks so conflicts are detected)
   let bestClassification: ContractClassification = chunkResults[0].classification;
   for (const cr of chunkResults) {
     if (cr.classification && cr.classification.confidence > (bestClassification?.confidence || 0)) {
       bestClassification = cr.classification;
     }
   }
+  const classification: ContractClassification = {
+    ...bestClassification,
+    governing_jurisdiction: mergeAcrossChunks(
+      (r) => r.classification?.governing_jurisdiction,
+      'Governing Jurisdiction'
+    ),
+  };
 
   // 2. Parties (merge and deduplicate)
   const partyMap = new Map<string, ContractParty>();
@@ -333,19 +384,6 @@ export function mergeChunkResults(
         }
       }
     }
-  }
-
-  // Helper to merge facts across all chunks
-  function mergeAcrossChunks(
-    extractFact: (r: ContractUnderstandingResult) => FactWithEvidence | undefined,
-    topic: string
-  ): FactWithEvidence {
-    let acc: FactWithEvidence | undefined;
-    for (const cr of chunkResults) {
-      const f = extractFact(cr);
-      acc = mergeFactWithEvidence(acc, f, topic, isFullCoverage, crossChunkConflicts);
-    }
-    return acc!;
   }
 
   // 3. Dates & Term
@@ -534,7 +572,7 @@ export function mergeChunkResults(
     document_id: baseResult.document_id,
     source_file_id: baseResult.source_file_id,
     verified_sha256: baseResult.verified_sha256,
-    classification: bestClassification,
+    classification,
     parties: Array.from(partyMap.values()),
     dates_and_term,
     scope_and_deliverables,

@@ -1208,4 +1208,416 @@ test.describe('Phase 2C — AI-Powered Contract Understanding Engine Tests', () 
       setGeminiGeneratorMock(null);
     }
   });
+
+  // -------------------------------------------------------------------------
+  // Task 2 — accurate conflict detection
+  // -------------------------------------------------------------------------
+  const ev = (element_id: string, source_block_id: string, exact_quote: string): EvidenceReference => ({
+    element_id,
+    source_block_id,
+    exact_quote,
+  });
+  const found = (summary: string, ...evidence: EvidenceReference[]): FactWithEvidence => ({
+    status: 'FOUND',
+    summary,
+    evidence,
+  });
+
+  test('27. Conflict detection: differently worded compatible provisions are NOT conflicts', () => {
+    const conflicts: AmbiguityOrConflict[] = [];
+
+    // Same meaning, different wording ("Net 30" vs "thirty (30) days")
+    const pay = mergeFactWithEvidence(
+      found('Net 30', ev('sec-2-clause-2', 'block-6', 'Net 30')),
+      found('Invoices are payable within thirty (30) days of receipt', ev('sec-2-clause-3', 'block-7', 'within thirty (30) days')),
+      'Payment Terms',
+      true,
+      conflicts
+    );
+    assert.equal(pay.status, 'FOUND');
+    assert.equal(pay.evidence.length, 2);
+
+    // Different deliverables (source code vs documentation) on a non-comparable topic
+    const scope = mergeFactWithEvidence(
+      found('Contractor delivers the source code', ev('sec-3-clause-1', 'block-8', 'source code')),
+      found('Contractor delivers user documentation', ev('sec-3-clause-2', 'block-9', 'user documentation')),
+      'Scope Description',
+      true,
+      conflicts
+    );
+    assert.equal(scope.status, 'FOUND');
+    assert.match(scope.summary, /source code/);
+    assert.match(scope.summary, /documentation/);
+    assert.equal(scope.evidence.length, 2);
+
+    // Different aspects of IP
+    const ip = mergeFactWithEvidence(
+      found('Client owns the deliverables upon full payment', ev('sec-4-clause-1', 'block-10', 'upon full payment')),
+      found('Contractor retains ownership of pre-existing tools', ev('sec-4-clause-2', 'block-11', 'pre-existing')),
+      'IP Ownership',
+      true,
+      conflicts
+    );
+    assert.equal(ip.status, 'FOUND');
+    assert.equal(ip.evidence.length, 2);
+
+    // Overlapping places are compatible (state + county in that state)
+    const law = mergeFactWithEvidence(
+      found('Governed by the laws of the State of California', ev('sec-7-clause-1', 'block-19', 'State of California')),
+      found('Disputes heard in San Francisco County, California', ev('sec-7-clause-1', 'block-19', 'San Francisco County, California')),
+      'Governing Jurisdiction',
+      true,
+      conflicts
+    );
+    assert.equal(law.status, 'FOUND');
+
+    // Different situations: a late-payment period is not the ordinary payment period
+    const late = mergeFactWithEvidence(
+      found('Invoices are payable within 30 days', ev('sec-2-clause-2', 'block-6', '30 days')),
+      found('Late payments accrue interest after 10 days overdue', ev('sec-2-clause-4', 'block-7', 'overdue')),
+      'Payment Terms',
+      true,
+      conflicts
+    );
+    assert.equal(late.status, 'FOUND');
+
+    assert.equal(conflicts.length, 0, 'no conflicts or ambiguities should be raised');
+  });
+
+  test('28. Conflict detection: incompatible payment periods are CONFLICTING and keep both evidence references', () => {
+    const conflicts: AmbiguityOrConflict[] = [];
+    const e1 = ev('sec-2-clause-2', 'block-6', 'payable within 15 days');
+    const e2 = ev('sec-9-clause-1', 'block-30', 'payable within 30 days');
+    const merged = mergeFactWithEvidence(
+      found('Invoices are payable within 15 days', e1),
+      found('Invoices are payable within 30 days', e2),
+      'Payment Terms',
+      true,
+      conflicts
+    );
+    assert.equal(merged.status, 'CONFLICTING');
+    assert.deepEqual(merged.evidence, [e1, e2]);
+    assert.equal(conflicts.length, 1);
+    assert.equal(conflicts[0].topic, 'Payment Terms');
+    assert.deepEqual(conflicts[0].evidence, [e1, e2]);
+    assert.match(conflicts[0].description, /15 days/);
+    assert.match(conflicts[0].description, /30 days/);
+  });
+
+  test('29. Conflict detection: governing law across chunks is merged and flagged (California vs New York)', () => {
+    const { normalized } = createFreelanceContractFixture();
+    const base = JSON.parse(JSON.stringify(analyzeContractDeterministically(normalized))) as ContractUnderstandingResult;
+    const a = JSON.parse(JSON.stringify(base)) as ContractUnderstandingResult;
+    const b = JSON.parse(JSON.stringify(base)) as ContractUnderstandingResult;
+    a.classification.governing_jurisdiction = found('California law governs this Agreement', ev('sec-7-clause-1', 'block-19', 'laws of the State of California'));
+    b.classification.governing_jurisdiction = found('New York law governs this Agreement', ev('sec-9-clause-1', 'block-30', 'laws of the State of New York'));
+    a.processed_sections = normalized.sections.slice(0, 3).map((s) => s.id);
+    b.processed_sections = normalized.sections.slice(3).map((s) => s.id);
+
+    const merged = mergeChunkResults([a, b], normalized.sections.length, normalized.sections.map((s) => s.id));
+    const jur = merged.classification.governing_jurisdiction;
+    assert.equal(jur.status, 'CONFLICTING');
+    assert.equal(jur.evidence.length, 2);
+    assert.ok(
+      merged.ambiguities_and_conflicts.some((c) => c.topic === 'Governing Jurisdiction' && c.evidence.length === 2)
+    );
+  });
+
+  test('30. Conflict detection: termination notice periods and cure periods', () => {
+    const conflicts: AmbiguityOrConflict[] = [];
+
+    const notice = mergeFactWithEvidence(
+      found('Either party may terminate for convenience on 30 days written notice', ev('sec-5-clause-1', 'block-13', '30 days')),
+      found('Either party may terminate for convenience on 60 days written notice', ev('sec-5-clause-4', 'block-16', '60 days')),
+      'Termination for Convenience',
+      true,
+      conflicts
+    );
+    assert.equal(notice.status, 'CONFLICTING');
+    assert.equal(notice.evidence.length, 2);
+
+    const cure = mergeFactWithEvidence(
+      found('Material breach may be cured within 10 days', ev('sec-5-clause-2', 'block-14', 'cured within 10 days')),
+      found('Material breach may be cured within 30 days', ev('sec-5-clause-5', 'block-17', 'cured within 30 days')),
+      'Termination for Cause',
+      true,
+      conflicts
+    );
+    assert.equal(cure.status, 'CONFLICTING');
+    assert.equal(conflicts.length, 2);
+
+    // A cure period and a notice period are different things: compatible.
+    const different = mergeFactWithEvidence(
+      found('Material breach may be cured within 10 days', ev('sec-5-clause-2', 'block-14', 'cured within 10 days')),
+      found('Termination takes effect on 30 days written notice', ev('sec-5-clause-3', 'block-15', '30 days written notice')),
+      'Termination for Cause',
+      true,
+      []
+    );
+    assert.equal(different.status, 'FOUND');
+
+    // Different breach types may legitimately have different cure periods.
+    const breachTypes = mergeFactWithEvidence(
+      found('Non-payment may be cured within 5 days', ev('sec-5-clause-2', 'block-14', '5 days')),
+      found('Breach of confidentiality may be cured within 30 days', ev('sec-5-clause-3', 'block-15', '30 days')),
+      'Termination for Cause',
+      true,
+      []
+    );
+    assert.equal(breachTypes.status, 'FOUND');
+  });
+
+  test('31. Conflict detection: undecidable relationships are AMBIGUOUS, not CONFLICTING', () => {
+    const cases: Array<[string, FactWithEvidence, FactWithEvidence]> = [
+      [
+        'Payment Terms',
+        found('Invoices are payable within 30 days', ev('a', 'b1', '30 days')),
+        found('Milestone invoices are payable within 10 days', ev('c', 'b2', '10 days')),
+      ],
+      [
+        'Payment Terms',
+        found('Payable within 15 business days', ev('a', 'b1', '15 business days')),
+        found('Payable within 30 days', ev('c', 'b2', '30 days')),
+      ],
+      [
+        'Payment Terms',
+        found('Payment is due on receipt of invoice', ev('a', 'b1', 'on receipt')),
+        found('Payable within 30 days', ev('c', 'b2', '30 days')),
+      ],
+      [
+        'Governing Jurisdiction',
+        found('Governed by the laws of the contractor\'s home state', ev('a', 'b1', 'home state')),
+        found('Governed by the laws of California', ev('c', 'b2', 'California')),
+      ],
+    ];
+    for (const [topic, x, y] of cases) {
+      const conflicts: AmbiguityOrConflict[] = [];
+      const merged = mergeFactWithEvidence(x, y, topic, true, conflicts);
+      assert.equal(merged.status, 'AMBIGUOUS', `${topic}: ${x.summary} vs ${y.summary}`);
+      assert.equal(merged.evidence.length, 2);
+      assert.equal(conflicts.length, 1);
+    }
+  });
+
+  test('32. Conflict detection: a CONFLICTING finding is never lost to a later chunk, and compatible chunk lists are preserved', () => {
+    const conflicts: AmbiguityOrConflict[] = [];
+    const first = mergeFactWithEvidence(
+      found('Payable within 15 days', ev('a', 'b1', '15 days')),
+      found('Payable within 30 days', ev('c', 'b2', '30 days')),
+      'Payment Terms',
+      true,
+      conflicts
+    );
+    assert.equal(first.status, 'CONFLICTING');
+
+    const withNotFound = mergeFactWithEvidence(
+      first,
+      { status: 'NOT_FOUND', summary: 'No provision found in agreement.', evidence: [] },
+      'Payment Terms',
+      true,
+      conflicts
+    );
+    assert.equal(withNotFound.status, 'CONFLICTING');
+
+    const withThird = mergeFactWithEvidence(
+      first,
+      found('Payable within 45 days', ev('d', 'b3', '45 days')),
+      'Payment Terms',
+      true,
+      conflicts
+    );
+    assert.equal(withThird.status, 'CONFLICTING');
+    assert.equal(withThird.evidence.length, 3);
+    assert.equal(conflicts.length, 1, 'the same conflict is not reported twice');
+
+    // Different obligations across chunks are all kept and raise no conflict.
+    const { normalized } = createFreelanceContractFixture();
+    const base = JSON.parse(JSON.stringify(analyzeContractDeterministically(normalized))) as ContractUnderstandingResult;
+    const a = JSON.parse(JSON.stringify(base)) as ContractUnderstandingResult;
+    const b = JSON.parse(JSON.stringify(base)) as ContractUnderstandingResult;
+    a.obligations.contractor_obligations = [found('Contractor delivers source code', ev('x', 'b1', 'source code'))];
+    b.obligations.contractor_obligations = [found('Contractor delivers documentation', ev('y', 'b2', 'documentation'))];
+    a.payment_and_commercial.payment_terms_days = found('Net 30', ev('p', 'b3', 'Net 30'));
+    b.payment_and_commercial.payment_terms_days = found('within 30 days of invoice', ev('q', 'b4', '30 days'));
+    a.processed_sections = normalized.sections.slice(0, 3).map((s) => s.id);
+    b.processed_sections = normalized.sections.slice(3).map((s) => s.id);
+    const merged = mergeChunkResults([a, b], normalized.sections.length, normalized.sections.map((s) => s.id));
+    assert.equal(merged.obligations.contractor_obligations.length, 2);
+    assert.equal(merged.payment_and_commercial.payment_terms_days.status, 'FOUND');
+    assert.ok(!merged.ambiguities_and_conflicts.some((c) => c.topic === 'Payment Terms'));
+  });
+
+  // -------------------------------------------------------------------------
+  // Task 3 — complete Gemini response schema validation
+  // -------------------------------------------------------------------------
+  function modelPayload(): any {
+    const { normalized } = createFreelanceContractFixture();
+    const full = JSON.parse(JSON.stringify(analyzeContractDeterministically(normalized)));
+    // Server-generated metadata is not model output: strip it to prove it is not required.
+    for (const k of [
+      'document_id', 'source_file_id', 'verified_sha256', 'stats', 'processing_status',
+      'analysis_source', 'model_used', 'analyzed_at', 'processed_sections',
+      'total_sections_in_document', 'coverage_percentage', 'warnings',
+    ]) {
+      delete full[k];
+    }
+    return full;
+  }
+  function removeAt(obj: any, path: string): void {
+    const parts = path.split('.');
+    let cur = obj;
+    for (const p of parts.slice(0, -1)) cur = cur[p];
+    delete cur[parts[parts.length - 1]];
+  }
+
+  test('33. Response validation: deterministic output and model-only fields are valid (no server metadata required)', () => {
+    const report = validateGeminiUnderstandingResponse(modelPayload());
+    assert.deepEqual(report.errors, []);
+    assert.equal(report.isValid, true);
+  });
+
+  test('34. Response validation: every required fact (including nested key provisions) is rejected when missing', () => {
+    const paths = [
+      'classification.governing_jurisdiction',
+      'dates_and_term.effective_date', 'dates_and_term.execution_date', 'dates_and_term.commencement_date',
+      'dates_and_term.expiration_date', 'dates_and_term.term_duration', 'dates_and_term.renewal_terms',
+      'scope_and_deliverables.scope_description', 'scope_and_deliverables.change_order_mechanism',
+      'scope_and_deliverables.acceptance_criteria',
+      'payment_and_commercial.fee_structure', 'payment_and_commercial.rates_and_amounts',
+      'payment_and_commercial.invoicing_schedule', 'payment_and_commercial.payment_terms_days',
+      'payment_and_commercial.late_payment_terms', 'payment_and_commercial.reimbursable_expenses',
+      'payment_and_commercial.taxes_and_withholding',
+      'key_provisions.intellectual_property.ownership', 'key_provisions.intellectual_property.pre_existing_ip',
+      'key_provisions.intellectual_property.license_granted',
+      'key_provisions.confidentiality.definition', 'key_provisions.confidentiality.duration',
+      'key_provisions.confidentiality.carveouts',
+      'key_provisions.non_compete', 'key_provisions.non_solicitation',
+      'key_provisions.warranties_and_disclaimers',
+      'key_provisions.limitation_of_liability.liability_cap',
+      'key_provisions.limitation_of_liability.exclusion_of_indirect_damages',
+      'key_provisions.indemnification.contractor_indemnification',
+      'key_provisions.indemnification.client_indemnification',
+      'key_provisions.termination.termination_for_convenience',
+      'key_provisions.termination.termination_for_cause',
+      'key_provisions.termination.post_termination_payment',
+      'key_provisions.dispute_resolution.method', 'key_provisions.dispute_resolution.venue_and_forum',
+      'key_provisions.dispute_resolution.prevailing_party_legal_fees',
+      'key_provisions.independent_contractor_affirmation', 'key_provisions.entire_agreement',
+      'scope_and_deliverables.deliverables', 'obligations.client_obligations',
+      'obligations.contractor_obligations', 'ambiguities_and_conflicts',
+      'omissions_and_missing_terms', 'parties', 'classification.primary_purpose',
+    ];
+    for (const path of paths) {
+      const payload = modelPayload();
+      removeAt(payload, path);
+      const report = validateGeminiUnderstandingResponse(payload);
+      assert.equal(report.isValid, false, `missing ${path} must be rejected`);
+      assert.ok(report.errors.some((e) => e.startsWith(path)), `error should name ${path}: ${report.errors.join(' | ')}`);
+    }
+    // A wholly missing parent is reported once, at the parent.
+    const noKp = modelPayload();
+    delete noKp.key_provisions;
+    const r = validateGeminiUnderstandingResponse(noKp);
+    assert.equal(r.isValid, false);
+    assert.deepEqual(r.errors, ['key_provisions: Required object is missing.']);
+  });
+
+  test('35. Response validation: classification, party role, statuses and data types are enforced', () => {
+    const bad = (mutate: (p: any) => void, expectPath: string) => {
+      const p = modelPayload();
+      mutate(p);
+      const report = validateGeminiUnderstandingResponse(p);
+      assert.equal(report.isValid, false, expectPath);
+      assert.ok(report.errors.some((e) => e.startsWith(expectPath)), `${expectPath}: ${report.errors.join(' | ')}`);
+    };
+    bad((p) => { p.classification.category = 'Pirate Agreement'; }, 'classification.category');
+    bad((p) => { p.classification.confidence = 1.5; }, 'classification.confidence');
+    bad((p) => { p.classification.confidence = -0.1; }, 'classification.confidence');
+    bad((p) => { p.classification.confidence = '0.9'; }, 'classification.confidence');
+    bad((p) => { p.classification.confidence = NaN; }, 'classification.confidence');
+    bad((p) => { p.classification.primary_purpose = 42; }, 'classification.primary_purpose');
+    bad((p) => { p.parties[0].role = 'Wizard'; }, 'parties[0].role');
+    bad((p) => { delete p.parties[0].legal_entity_type; }, 'parties[0].legal_entity_type');
+    bad((p) => { p.parties[0].defined_term = null; }, 'parties[0].defined_term');
+    bad((p) => { p.parties[0].evidence = 'block-1'; }, 'parties[0].evidence');
+    bad((p) => { p.parties[0].evidence = [{ element_id: 'x', source_block_id: 'b' }]; }, 'parties[0].evidence[0].exact_quote');
+    bad((p) => { p.dates_and_term.effective_date.status = 'MAYBE'; }, 'dates_and_term.effective_date.status');
+    bad((p) => { p.dates_and_term.execution_date.summary = 5; }, 'dates_and_term.execution_date.summary');
+    bad((p) => { p.dates_and_term.term_duration = 'one year'; }, 'dates_and_term.term_duration');
+    bad((p) => { p.key_provisions.non_compete.evidence = {}; }, 'key_provisions.non_compete.evidence');
+    bad((p) => { p.key_provisions = []; }, 'key_provisions');
+  });
+
+  test('36. Response validation: every item inside deliverables, obligations, ambiguities and omissions is validated', () => {
+    const bad = (mutate: (p: any) => void, expectPath: string) => {
+      const p = modelPayload();
+      mutate(p);
+      const report = validateGeminiUnderstandingResponse(p);
+      assert.equal(report.isValid, false, expectPath);
+      assert.ok(report.errors.some((e) => e.startsWith(expectPath)), `${expectPath}: ${report.errors.join(' | ')}`);
+    };
+    const goodFact = found('x', ev('e', 'b', 'q'));
+    bad((p) => { p.scope_and_deliverables.deliverables = [goodFact, { status: 'FOUND' }]; }, 'scope_and_deliverables.deliverables[1]');
+    bad((p) => { p.obligations.client_obligations = ['pay on time']; }, 'obligations.client_obligations[0]');
+    bad((p) => { p.obligations.contractor_obligations = [{ ...goodFact, evidence: [{ element_id: '', source_block_id: 'b', exact_quote: 'q' }] }]; }, 'obligations.contractor_obligations[0].evidence[0].element_id');
+    bad((p) => { p.obligations.client_obligations = {}; }, 'obligations.client_obligations');
+    bad((p) => { p.ambiguities_and_conflicts = [{ topic: 'x', description: 'y' }]; }, 'ambiguities_and_conflicts[0].evidence');
+    bad((p) => { p.ambiguities_and_conflicts = [{ topic: '', description: 'y', evidence: [] }]; }, 'ambiguities_and_conflicts[0].topic');
+    bad((p) => { p.omissions_and_missing_terms = [{ provision_name: 'x' }]; }, 'omissions_and_missing_terms[0].explanation');
+    bad((p) => { p.omissions_and_missing_terms = 'none'; }, 'omissions_and_missing_terms');
+
+    // Well-formed items are accepted.
+    const ok = modelPayload();
+    ok.scope_and_deliverables.deliverables = [goodFact];
+    ok.obligations.client_obligations = [goodFact];
+    ok.ambiguities_and_conflicts = [{ topic: 't', description: 'd', evidence: [ev('e', 'b', 'q')] }];
+    ok.omissions_and_missing_terms = [{ provision_name: 'p', explanation: 'e' }];
+    assert.deepEqual(validateGeminiUnderstandingResponse(ok).errors, []);
+  });
+
+  test('37. Response validation: non-object responses are rejected', () => {
+    for (const v of [null, undefined, 'text', 42, [], true]) {
+      const report = validateGeminiUnderstandingResponse(v as any);
+      assert.equal(report.isValid, false);
+    }
+  });
+
+  test('38. Invalid Gemini output triggers deterministic fallback without exposing provider details or model values', async () => {
+    const { normalized, extraction } = createFreelanceContractFixture();
+    const secret = 'AIzaSyD-FAKEFAKEFAKEFAKEFAKEFAKEFAKE12345';
+
+    // Previously accepted: missing commencement_date + invalid role carrying a secret-looking value.
+    const payload = modelPayload();
+    delete payload.dates_and_term.commencement_date;
+    payload.parties[0].role = `${secret} key=abc123`;
+    setGeminiGeneratorMock(async () => JSON.stringify(payload));
+    try {
+      const result = await understandContractWithGemini(normalized, extraction);
+      assert.equal(result.analysis_source, 'DETERMINISTIC_FALLBACK');
+      assert.equal(result.stats.verification_percentage, 100);
+      const text = JSON.stringify(result.warnings);
+      assert.ok(!text.includes(secret));
+      assert.ok(!text.includes('abc123'));
+    } finally {
+      setGeminiGeneratorMock(null);
+    }
+
+    // A valid response is accepted as GEMINI, with server-generated metadata set by the server.
+    setGeminiGeneratorMock(async () => JSON.stringify(modelPayload()));
+    try {
+      const result = await understandContractWithGemini(normalized, extraction);
+      assert.equal(result.analysis_source, 'GEMINI');
+      assert.equal(result.document_id, normalized.document_id);
+      assert.equal(result.verified_sha256, normalized.verified_sha256);
+    } finally {
+      setGeminiGeneratorMock(null);
+    }
+  });
+
+  test('39. Deterministic fallback output always satisfies the response schema', () => {
+    const { normalized } = createFreelanceContractFixture();
+    const report = validateGeminiUnderstandingResponse(analyzeContractDeterministically(normalized));
+    assert.deepEqual(report.errors, []);
+  });
 });
+
