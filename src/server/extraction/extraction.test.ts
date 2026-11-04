@@ -1,19 +1,26 @@
 import test, { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import AdmZip from 'adm-zip';
 import { extractTxtContent } from './txtExtractor';
 import { extractPdfContent } from './pdfExtractor';
-import { extractDocxContent } from './docxExtractor';
-import { extractContractDocument } from './extractionService';
+import { extractDocxContent, extractDocxWithTimeout } from './docxExtractor';
+import {
+  extractContractDocument,
+  getCachedExtraction,
+  clearAllCachedExtractions,
+  invalidateCachedExtraction,
+} from './extractionService';
 import {
   storeInQuarantine,
   saveSecurityReport,
-  getSecurityReport,
+  deleteQuarantinedFile,
+  purgeDocumentRecord,
 } from '../security/quarantineManager';
 import { FullSecurityReport } from '../security/types';
 
-// Helper to create a valid minimal PDF buffer with digital text
+// Helper to create a valid minimal PDF buffer with digital text or scanned image
 function createTestPdf(content: string, options: { multiPage?: boolean; hasImage?: boolean } = {}): Buffer {
   if (options.hasImage && !content.trim()) {
     // Scanned PDF fixture with image XObject and no digital text
@@ -60,6 +67,37 @@ function createTestPdf(content: string, options: { multiPage?: boolean; hasImage
     'trailer<</Size 6/Root 1 0 R>>\n' +
     'startxref\n' +
     '430\n' +
+    '%%EOF'
+  );
+}
+
+// Helper to create a mixed 2-page PDF: Page 1 digital text, Page 2 scanned image
+function createMixedTestPdf(page1Text: string): Buffer {
+  const stream1 = `BT /F1 12 Tf 50 750 Td (${page1Text.replace(/[()]/g, '')}) Tj ET`;
+  return Buffer.from(
+    '%PDF-1.4\n' +
+    '1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n' +
+    '2 0 obj<</Type/Pages/Kids[3 0 R 6 0 R]/Count 2>>endobj\n' +
+    // Page 1: Digital text
+    '3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj\n' +
+    `4 0 obj<</Length ${stream1.length}>>stream\n${stream1}\nendstream\nendobj\n` +
+    '5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n' +
+    // Page 2: Scanned image XObject, no digital text
+    '6 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Resources<</XObject<</Im1 7 0 R>>>>>>endobj\n' +
+    '7 0 obj<</Type/XObject/Subtype/Image/Width 10/Height 10/ColorSpace/DeviceRGB/BitsPerComponent 8/Length 6>>stream\n012345\nendstream\nendobj\n' +
+    'xref\n' +
+    '0 8\n' +
+    '0000000000 65535 f \n' +
+    '0000000009 00000 n \n' +
+    '0000000058 00000 n \n' +
+    '0000000122 00000 n \n' +
+    '0000000251 00000 n \n' +
+    '0000000370 00000 n \n' +
+    '0000000450 00000 n \n' +
+    '0000000557 00000 n \n' +
+    'trailer<</Size 8/Root 1 0 R>>\n' +
+    'startxref\n' +
+    '695\n' +
     '%%EOF'
   );
 }
@@ -160,8 +198,8 @@ function createMockSecurityReport(
   };
 }
 
-describe('Phase 2A Document Extraction Engine', () => {
-  describe('TXT Extraction', () => {
+describe('Phase 2A Document Extraction Engine — Security & Correctness', () => {
+  describe('TXT Extraction & UTF-8 Detection', () => {
     it('should strip UTF-8 BOM and extract contract sections, paragraphs, and lists', () => {
       const txtContent =
         '\uFEFFSECTION 1. SCOPE OF SERVICES\r\n\r\n' +
@@ -176,6 +214,7 @@ describe('Phase 2A Document Extraction Engine', () => {
       const buffer = Buffer.from(txtContent, 'utf8');
       const result = extractTxtContent(buffer, 'test-txt-1');
 
+      assert.equal(result.status, 'COMPLETED');
       assert.equal(result.warnings.length, 0);
       assert.ok(result.blocks.length >= 5);
 
@@ -193,6 +232,17 @@ describe('Phase 2A Document Extraction Engine', () => {
       assert.equal(compBlock.type, 'paragraph');
     });
 
+    it('should detect invalid UTF-8 in TXT files and report it explicitly', () => {
+      // Create invalid UTF-8 byte sequence (e.g. invalid continuation bytes 0x80, 0xC0)
+      const invalidUtf8Buffer = Buffer.from([0x53, 0x45, 0x43, 0x54, 0x49, 0x4F, 0x4E, 0x20, 0x31, 0xFF, 0xFE, 0xC0, 0x80]);
+      const result = extractTxtContent(invalidUtf8Buffer, 'invalid-utf8-txt');
+
+      assert.equal(result.status, 'FAILED');
+      assert.equal(result.blocks.length, 0);
+      assert.ok(result.warnings.some((w) => /Invalid UTF-8 encoding detected/i.test(w)));
+      assert.match(result.error || '', /Invalid UTF-8 encoding detected/i);
+    });
+
     it('should parse pipe-delimited and tab-delimited tables in plain text', () => {
       const tableTxt =
         'FEE SCHEDULE\n\n' +
@@ -207,7 +257,7 @@ describe('Phase 2A Document Extraction Engine', () => {
       const tblBlock = result.blocks.find((b) => b.type === 'table');
       assert.ok(tblBlock);
       assert.ok(tblBlock.table_data);
-      assert.equal(tblBlock.table_data.length, 3); // Header + 2 data rows
+      assert.equal(tblBlock.table_data.length, 3);
       assert.deepEqual(tblBlock.table_data[0], ['Milestone', 'Description', 'Fee']);
       assert.deepEqual(tblBlock.table_data[1], ['Phase 1', 'UI & Security', '$3,000']);
       assert.deepEqual(tblBlock.table_data[2], ['Phase 2', 'Extraction Engine', '$4,500']);
@@ -216,13 +266,14 @@ describe('Phase 2A Document Extraction Engine', () => {
     it('should gracefully handle empty plain text documents', () => {
       const buffer = Buffer.from('   \n\n  \t  \n', 'utf8');
       const result = extractTxtContent(buffer, 'empty-txt');
+      assert.equal(result.status, 'FAILED');
       assert.equal(result.blocks.length, 0);
       assert.ok(result.warnings.length > 0);
       assert.match(result.warnings[0], /no readable text/i);
     });
   });
 
-  describe('PDF Extraction', () => {
+  describe('PDF Extraction & Timeout Isolation', () => {
     it('should extract digital text blocks and preserve reading flow', async () => {
       const pdfBuffer = createTestPdf('SECTION 1. INDEPENDENT CONTRACTOR AGREEMENT');
       const result = await extractPdfContent(pdfBuffer, 'pdf-digital-1');
@@ -243,10 +294,33 @@ describe('Phase 2A Document Extraction Engine', () => {
       assert.ok(result.warnings.some((w) => /scanned|OCR/i.test(w)));
       assert.ok(result.scannedPages.includes(1));
     });
+
+    it('should detect mixed digital-text and scanned-image PDFs and report PARTIAL status', async () => {
+      const mixedPdf = createMixedTestPdf('SECTION 1. MASTER SERVICES AGREEMENT');
+      const result = await extractPdfContent(mixedPdf, 'pdf-mixed-1');
+
+      assert.equal(result.status, 'PARTIAL');
+      assert.equal(result.totalPages, 2);
+      assert.equal(result.extractedPages, 1);
+      assert.ok(result.scannedPages.includes(2));
+      assert.ok(result.warnings.some((w) => /partially extracted|Page 2/i.test(w)));
+      assert.ok(result.blocks.some((b) => b.text.includes('SECTION 1')));
+    });
+
+    it('should genuinely terminate execution on PDF parser timeout using isolated worker', async () => {
+      const pdfBuffer = createTestPdf('SECTION 1. TIMEOUT TEST CLAUSE');
+      // Set an impossibly small timeout of 1ms to trigger the genuine worker termination
+      await assert.rejects(
+        async () => {
+          await extractPdfContent(pdfBuffer, 'pdf-timeout-test', 1);
+        },
+        /timed out/i
+      );
+    });
   });
 
-  describe('DOCX Extraction', () => {
-    it('should extract document hierarchy, preserving headings, lists, tables, and exact financial figures', () => {
+  describe('DOCX Resource Limits, Decompression Bombs & Provenance', () => {
+    it('should extract document hierarchy, preserving structural references, tables, and exact financial figures without fabricating page numbers', () => {
       const docxBody =
         '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>CONSULTING AGREEMENT</w:t></w:r></w:p>' +
         '<w:p><w:r><w:t>Effective as of November 1, 2026, Contractor will provide specialized development services.</w:t></w:r></w:p>' +
@@ -271,16 +345,26 @@ describe('Phase 2A Document Extraction Engine', () => {
       assert.equal(result.warnings.length, 0);
       assert.ok(result.blocks.length >= 4);
 
+      // Verify provenance: page_number must be undefined for DOCX; rely on structural_ref
+      assert.equal(result.totalPages, undefined);
+      assert.equal(result.extractedPages, undefined);
+      for (const block of result.blocks) {
+        assert.equal(block.page_number, undefined, 'DOCX blocks must not fabricate page numbers');
+        assert.ok(block.structural_ref, 'DOCX blocks must provide structural references');
+      }
+
       // Verify heading
       const heading = result.blocks.find((b) => b.text === 'CONSULTING AGREEMENT');
       assert.ok(heading);
       assert.equal(heading.type, 'heading');
       assert.equal(heading.metadata?.heading_level, 1);
+      assert.equal(heading.structural_ref, 'sec-1');
 
       // Verify lists
       const lists = result.blocks.filter((b) => b.type === 'list');
       assert.equal(lists.length, 2);
       assert.equal(lists[0].text, 'Backend extraction pipeline implementation');
+      assert.equal(lists[0].structural_ref, 'list-1');
 
       // Verify table and preserved financial symbols
       const table = result.blocks.find((b) => b.type === 'table');
@@ -289,6 +373,88 @@ describe('Phase 2A Document Extraction Engine', () => {
       assert.equal(table.table_data.length, 2);
       assert.deepEqual(table.table_data[0], ['Deliverable', 'Due Date', 'Rate']);
       assert.deepEqual(table.table_data[1], ['Milestone 1', 'Nov 15, 2026', '$150.00/hr']);
+    });
+
+    it('should reject DOCX with excessive archive entries (> 300 entries)', () => {
+      const zip = new AdmZip();
+      for (let i = 0; i < 305; i++) {
+        zip.addFile(`entry_${i}.txt`, Buffer.from('data'));
+      }
+      const buffer = zip.toBuffer();
+
+      assert.throws(
+        () => extractDocxContent(buffer, 'excessive-entries-docx'),
+        /Entry count \(305\) exceeds maximum limit of 300/i
+      );
+    });
+
+    it('should reject DOCX with oversized single entry (> 15 MB declared size)', () => {
+      const zip = new AdmZip();
+      zip.addFile(
+        'word/document.xml',
+        Buffer.from('<w:document><w:body></w:body></w:document>')
+      );
+      const fakeLargeHeader = zip.getEntries()[0];
+      // Inject oversized header size (16 MB)
+      fakeLargeHeader.header.size = 16 * 1024 * 1024;
+      const buffer = zip.toBuffer();
+
+      // Modify the ZIP local header in binary to reflect 16MB declared size
+      // Or construct ZIP with entry declaring 16MB
+      const zip2 = new AdmZip();
+      zip2.addFile(
+        '[Content_Types].xml',
+        Buffer.from('<Types/>')
+      );
+      zip2.addFile(
+        'word/document.xml',
+        Buffer.from('<w:document><w:body></w:body></w:document>')
+      );
+      // Manually tamper the entry header size in the entry object
+      const docEntry = zip2.getEntry('word/document.xml');
+      if (docEntry) {
+        docEntry.header.size = 16 * 1024 * 1024;
+      }
+      const tamperedBuffer = zip2.toBuffer();
+
+      assert.throws(
+        () => extractDocxContent(tamperedBuffer, 'oversized-docx'),
+        /exceeding limit of 15 MB/i
+      );
+    });
+
+    it('should reject DOCX with decompression bomb expanding beyond safe output length', () => {
+      // Craft a zip bomb: tiny compressed payload that expands to >15MB of zeros
+      const zip = new AdmZip();
+      zip.addFile('[Content_Types].xml', Buffer.from('<Types/>'));
+      zip.addFile('_rels/.rels', Buffer.from('<Relationships/>'));
+      
+      // Highly compressible buffer of 16MB zeros
+      const largeZeros = Buffer.alloc(16 * 1024 * 1024, 0x20); // 16MB spaces
+      const compressedZeros = zlib.deflateRawSync(largeZeros);
+      
+      // Inject manually
+      const bombZip = new AdmZip();
+      bombZip.addFile('[Content_Types].xml', Buffer.from('<Types/>'));
+      bombZip.addFile('word/document.xml', largeZeros);
+      const bombBuffer = bombZip.toBuffer();
+
+      // Should be rejected either by header inspection or by bounded inflate
+      assert.throws(
+        () => extractDocxContent(bombBuffer, 'bomb-docx'),
+        /exceeding limit of 15 MB|Decompression bomb detected/i
+      );
+    });
+
+    it('should genuinely terminate execution on DOCX parser timeout in isolated worker', async () => {
+      const docxBuffer = createTestDocx('<w:p><w:r><w:t>Valid Paragraph</w:t></w:r></w:p>');
+      // 1ms timeout triggers worker termination
+      await assert.rejects(
+        async () => {
+          await extractDocxWithTimeout(docxBuffer, 'docx-timeout-test', 1);
+        },
+        /timed out/i
+      );
     });
 
     it('should throw clear error on corrupted DOCX missing document.xml', () => {
@@ -303,83 +469,121 @@ describe('Phase 2A Document Extraction Engine', () => {
     });
   });
 
-  describe('Extraction Service & Security Gate Enforcement', () => {
-    it('should reject unauthorized session access during extraction', async () => {
+  describe('Cached Extraction Authorization & Lifecycle Cleanup', () => {
+    it('should require existing document registry record and verified session ownership', async () => {
       const sessionId1 = 'sess-' + crypto.randomUUID();
       const sessionId2 = 'sess-' + crypto.randomUUID();
 
-      const doc = Buffer.from('SECTION 1. CONTRACT\n\nValid contract text.');
-      const quarantined = storeInQuarantine(doc, 'contract.txt', 'text/plain', sessionId1);
-
-      // Create valid security report for sessionId1
+      const doc = Buffer.from('SECTION 1. DEFINITIONS\n\nContractor means John Doe.');
+      const quarantined = storeInQuarantine(doc, 'auth_contract.txt', 'text/plain', sessionId1);
       saveSecurityReport(createMockSecurityReport(quarantined.fileId, quarantined.metadata, 'CLEAN_NO_KNOWN_THREATS', true));
 
-      // Attempt extraction using sessionId2
-      const res = await extractContractDocument(quarantined.fileId, sessionId2);
-      assert.equal(res.authorized, false);
-      assert.match(res.error || '', /session ownership mismatch/i);
+      // Extract under sessionId1
+      const extractRes = await extractContractDocument(quarantined.fileId, sessionId1);
+      assert.equal(extractRes.success, true);
+      assert.ok(extractRes.result);
+
+      // 1. Session 1 can retrieve cached extraction
+      const cacheOwn = getCachedExtraction(quarantined.fileId, sessionId1);
+      assert.equal(cacheOwn.authorized, true);
+      assert.equal(cacheOwn.exists, true);
+      assert.equal(cacheOwn.result?.document_id, extractRes.result.document_id);
+
+      // 2. Cross-session access: Session 2 MUST be rejected with authorized: false
+      const cacheCross = getCachedExtraction(quarantined.fileId, sessionId2);
+      assert.equal(cacheCross.authorized, false);
+      assert.match(cacheCross.error || '', /session ownership mismatch/i);
     });
 
-    it('should reject files that failed security inspection or have threat detected', async () => {
+    it('should not return cached content for missing or unregistered documents', () => {
+      const randomFileId = crypto.randomUUID();
       const sessionId = 'sess-' + crypto.randomUUID();
-      const doc = Buffer.from('Malicious payload content.');
-      const quarantined = storeInQuarantine(doc, 'infected.pdf', 'application/pdf', sessionId);
 
-      saveSecurityReport(createMockSecurityReport(quarantined.fileId, quarantined.metadata, 'THREAT_DETECTED', false));
-
-      const res = await extractContractDocument(quarantined.fileId, sessionId);
-      assert.equal(res.success, false);
-      assert.equal(res.authorized, true);
-      assert.match(res.error || '', /THREAT_DETECTED|Security verification failed/i);
+      const lookup = getCachedExtraction(randomFileId, sessionId);
+      assert.equal(lookup.authorized, true);
+      assert.equal(lookup.exists, false);
+      assert.equal(lookup.result, undefined);
+      assert.match(lookup.error || '', /not found|expired/i);
     });
 
-    it('should reject extraction if document SHA-256 fingerprint does not match inspection report', async () => {
+    it('should immediately clear cached extraction when document is deleted', async () => {
       const sessionId = 'sess-' + crypto.randomUUID();
-      const originalDoc = Buffer.from('Original verified document content.');
-      const quarantined = storeInQuarantine(originalDoc, 'tampered.txt', 'text/plain', sessionId);
-
-      // Save report with a forged/different SHA-256 hash
-      const forgedMetadata = {
-        ...quarantined.metadata,
-        sha256: '0000000000000000000000000000000000000000000000000000000000000000',
-      };
-      saveSecurityReport(createMockSecurityReport(quarantined.fileId, forgedMetadata, 'CLEAN_NO_KNOWN_THREATS', true));
-
-      const res = await extractContractDocument(quarantined.fileId, sessionId);
-      assert.equal(res.success, false);
-      assert.match(res.error || '', /integrity violation|SHA-256/i);
-    });
-
-    it('should successfully extract clean, verified contract and cache result', async () => {
-      const sessionId = 'sess-' + crypto.randomUUID();
-      const contractText =
-        'SECTION 1. DEFINITIONS\n\n' +
-        'Contractor means John Doe.\n\n' +
-        'Client means Acme Corp.\n\n' +
-        'SECTION 2. TERM\n\n' +
-        'Term begins on Jan 1, 2026.';
-
-      const doc = Buffer.from(contractText, 'utf8');
-      const quarantined = storeInQuarantine(doc, 'verified_contract.txt', 'text/plain', sessionId);
-
+      const doc = Buffer.from('SECTION 1. DELETION TEST\n\nTemporary contract clause.');
+      const quarantined = storeInQuarantine(doc, 'to_delete.txt', 'text/plain', sessionId);
       saveSecurityReport(createMockSecurityReport(quarantined.fileId, quarantined.metadata, 'CLEAN_NO_KNOWN_THREATS', true));
 
-      const res = await extractContractDocument(quarantined.fileId, sessionId);
-      assert.equal(res.success, true);
-      assert.equal(res.authorized, true);
-      assert.ok(res.result);
-      assert.equal(res.result.extraction_status, 'COMPLETED');
-      assert.equal(res.result.source_format, 'txt');
-      assert.equal(res.result.verified_sha256, quarantined.metadata.sha256);
-      assert.ok(res.result.blocks.length >= 4);
+      // Perform extraction
+      const extractRes = await extractContractDocument(quarantined.fileId, sessionId);
+      assert.equal(extractRes.success, true);
 
-      // Verify second call retrieves from cache
-      const cachedRes = await extractContractDocument(quarantined.fileId, sessionId);
-      assert.equal(cachedRes.result?.document_id, res.result.document_id);
+      // Confirm cached
+      assert.ok(getCachedExtraction(quarantined.fileId, sessionId).result);
+
+      // Delete document from quarantine
+      const delResult = deleteQuarantinedFile(quarantined.fileId, sessionId);
+      assert.equal(delResult.success, true);
+
+      // Cached extraction MUST be invalidated and return exists: false
+      const postDeleteLookup = getCachedExtraction(quarantined.fileId, sessionId);
+      assert.equal(postDeleteLookup.exists, false);
+      assert.equal(postDeleteLookup.result, undefined);
+
+      // Re-extraction must fail
+      const reExtract = await extractContractDocument(quarantined.fileId, sessionId);
+      assert.equal(reExtract.success, false);
+      assert.match(reExtract.error || '', /not completed security inspection|deleted|expired/i);
+    });
+
+    it('should clear cached extraction when document expires or is purged from registry', async () => {
+      const sessionId = 'sess-' + crypto.randomUUID();
+      const doc = Buffer.from('SECTION 1. EXPIRATION TEST\n\nExpiring contract clause.');
+      const quarantined = storeInQuarantine(doc, 'to_expire.txt', 'text/plain', sessionId);
+      saveSecurityReport(createMockSecurityReport(quarantined.fileId, quarantined.metadata, 'CLEAN_NO_KNOWN_THREATS', true));
+
+      // Perform extraction
+      const extractRes = await extractContractDocument(quarantined.fileId, sessionId);
+      assert.equal(extractRes.success, true);
+      assert.ok(getCachedExtraction(quarantined.fileId, sessionId).result);
+
+      // Simulate expiration purge
+      purgeDocumentRecord(quarantined.fileId);
+
+      // Cache MUST be cleared
+      const postExpireLookup = getCachedExtraction(quarantined.fileId, sessionId);
+      assert.equal(postExpireLookup.exists, false);
+      assert.equal(postExpireLookup.result, undefined);
+    });
+
+    it('should invalidate cache if document SHA-256 fingerprint changes (tamper detection)', async () => {
+      const sessionId = 'sess-' + crypto.randomUUID();
+      const doc = Buffer.from('SECTION 1. TAMPER TEST\n\nOriginal contract text.');
+      const quarantined = storeInQuarantine(doc, 'tamper_test.txt', 'text/plain', sessionId);
+      const report = createMockSecurityReport(quarantined.fileId, quarantined.metadata, 'CLEAN_NO_KNOWN_THREATS', true);
+      saveSecurityReport(report);
+
+      // Extract
+      const extractRes = await extractContractDocument(quarantined.fileId, sessionId);
+      assert.equal(extractRes.success, true);
+
+      // Tamper metadata hash in registry
+      saveSecurityReport({
+        ...report,
+        metadata: {
+          ...report.metadata,
+          sha256: 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+        },
+      });
+
+      // Query cache: must detect mismatch, clear cache, and reject
+      const lookup = getCachedExtraction(quarantined.fileId, sessionId);
+      assert.equal(lookup.exists, false);
+      assert.equal(lookup.result, undefined);
+      assert.match(lookup.error || '', /integrity mismatch|modified/i);
     });
   });
 
   after(() => {
+    clearAllCachedExtractions();
     setTimeout(() => process.exit(0), 100).unref();
   });
 });

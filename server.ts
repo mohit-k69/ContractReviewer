@@ -187,17 +187,16 @@ async function startServer() {
     const fileId = req.params.id;
     const sessionId = req.verifiedSession!.sessionId;
 
-    const { report, authorized } = getSecurityReport(fileId, sessionId);
-    if (!authorized) {
-      return res.status(403).json({ error: 'Access denied: Session ownership mismatch.' });
+    const cacheLookup = getCachedExtraction(fileId, sessionId);
+    if (!cacheLookup.authorized) {
+      return res.status(403).json({ error: cacheLookup.error || 'Access denied: Session ownership mismatch.' });
     }
 
-    const cached = getCachedExtraction(fileId);
-    if (!cached) {
-      return res.status(404).json({ error: 'No extraction record found for this document.' });
+    if (!cacheLookup.exists || !cacheLookup.result) {
+      return res.status(404).json({ error: cacheLookup.error || 'No extraction record found for this document.' });
     }
 
-    return res.json(cached);
+    return res.json(cacheLookup.result);
   });
 
   // Vite middleware in dev or static files in production

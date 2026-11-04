@@ -18,6 +18,32 @@ const cleanupFailures: CleanupFailure[] = [];
 // In-memory registry of quarantined documents with session ownership
 const quarantineRegistry = new Map<string, { metadata: FileMetadata; report?: FullSecurityReport }>();
 
+type DocumentRemovedListener = (fileId: string) => void;
+const documentRemovedListeners: DocumentRemovedListener[] = [];
+
+export function onDocumentRemoved(listener: DocumentRemovedListener): void {
+  documentRemovedListeners.push(listener);
+}
+
+export function notifyDocumentRemoved(fileId: string): void {
+  for (const listener of documentRemovedListeners) {
+    try {
+      listener(fileId);
+    } catch (err) {
+      console.error(`[QuarantineManager] Error in document removed listener for ${fileId}:`, err);
+    }
+  }
+}
+
+export function hasDocumentRecord(fileId: string): boolean {
+  return quarantineRegistry.has(fileId);
+}
+
+export function purgeDocumentRecord(fileId: string): void {
+  quarantineRegistry.delete(fileId);
+  notifyDocumentRemoved(fileId);
+}
+
 export function getCleanupFailures(): CleanupFailure[] {
   return [...cleanupFailures];
 }
@@ -67,6 +93,7 @@ export function reconcileQuarantineOnStartup(): { purged: number; restored: numb
           if (fs.existsSync(quatPath)) fs.unlinkSync(quatPath);
           fs.unlinkSync(metaPath);
           purged++;
+          notifyDocumentRemoved(fileId);
         } else {
           // Valid non-expired file: restore to registry
           quarantineRegistry.set(fileId, {
@@ -248,6 +275,7 @@ export function deleteQuarantinedFile(
   }
 
   quarantineRegistry.delete(fileId);
+  notifyDocumentRemoved(fileId);
   return { success: true, authorized: true };
 }
 

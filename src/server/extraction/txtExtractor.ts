@@ -4,14 +4,38 @@ import { ExtractedBlock } from './types';
 const HEADING_REGEX = /^(SECTION\s+\d+|ARTICLE\s+\d+|CLAUSE\s+\d+|EXHIBIT\s+[A-Z]|SCHEDULE\s+[A-Z]|\d+(\.\d+)*\s+[A-Z][A-Za-z0-9\s,\-_:;()]+|[A-Z\s\-_:]{4,80})$/;
 const LIST_ITEM_REGEX = /^(\s*[-*•]\s+|\s*\(\w+\)\s+|\s*\d+[\.\)]\s+)/;
 
+export interface TxtExtractionOutput {
+  blocks: ExtractedBlock[];
+  warnings: string[];
+  totalPages: number;
+  status: 'COMPLETED' | 'FAILED';
+  error?: string;
+}
+
 export function extractTxtContent(
   buffer: Buffer,
   fileId: string
-): { blocks: ExtractedBlock[]; warnings: string[]; totalPages: number } {
+): TxtExtractionOutput {
   const warnings: string[] = [];
 
+  // Strictly validate UTF-8 encoding (fatal: true rejects invalid byte sequences)
+  let text: string;
+  try {
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    text = decoder.decode(buffer);
+  } catch (err: any) {
+    const errorMsg = `Invalid UTF-8 encoding detected: ${err.message}. Text files must be valid UTF-8 encoded documents.`;
+    warnings.push(errorMsg);
+    return {
+      blocks: [],
+      warnings,
+      totalPages: 1,
+      status: 'FAILED',
+      error: errorMsg,
+    };
+  }
+
   // Strip UTF-8 Byte Order Mark (BOM) if present
-  let text = buffer.toString('utf8');
   if (text.charCodeAt(0) === 0xfeff) {
     text = text.slice(1);
   }
@@ -21,7 +45,7 @@ export function extractTxtContent(
 
   if (normalized.trim().length === 0) {
     warnings.push('Document contains no readable text content.');
-    return { blocks: [], warnings, totalPages: 1 };
+    return { blocks: [], warnings, totalPages: 1, status: 'FAILED' };
   }
 
   // Split into raw paragraph chunks separated by one or more blank lines
@@ -148,5 +172,10 @@ export function extractTxtContent(
     }
   }
 
-  return { blocks, warnings, totalPages: 1 };
+  return {
+    blocks,
+    warnings,
+    totalPages: 1,
+    status: blocks.length > 0 ? 'COMPLETED' : 'FAILED',
+  };
 }
