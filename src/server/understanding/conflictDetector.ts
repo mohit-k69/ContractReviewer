@@ -19,7 +19,7 @@ export type FactRelation =
   | { kind: 'CONFLICT'; detail: string }
   | { kind: 'UNCERTAIN'; detail: string };
 
-type ValueKind = 'duration' | 'place' | 'date';
+type ValueKind = 'duration' | 'place' | 'date' | 'amount' | 'taxbasis';
 
 const TOPIC_VALUE_KIND: Record<string, ValueKind> = {
   'Payment Terms': 'duration',
@@ -33,6 +33,14 @@ const TOPIC_VALUE_KIND: Record<string, ValueKind> = {
   'Execution Date': 'date',
   'Commencement Date': 'date',
   'Expiration Date': 'date',
+  // Contractor-intelligence topics
+  'Breach Notification': 'duration',
+  'Renewal Duration': 'duration',
+  'Non-Renewal Notice': 'duration',
+  'Warranty Duration': 'duration',
+  'Rates & Amounts': 'amount',
+  'Minimum Insurance Coverage': 'amount',
+  'Amounts Tax Basis': 'taxbasis',
 };
 
 // ---------------------------------------------------------------------------
@@ -55,7 +63,7 @@ export function extractDurations(text: string): Set<string> {
 
   const out = new Set<string>();
   const re = new RegExp(
-    `\\b(\\d+(?:\\.\\d+)?|${NUMBER_WORD_PATTERN})[\\s-]*(business\\s+|working\\s+|calendar\\s+)?(day|week|month|year)s?\\b`,
+    `\\b(\\d+(?:\\.\\d+)?|${NUMBER_WORD_PATTERN})[\\s-]*(business\\s+|working\\s+|calendar\\s+)?(hour|day|week|month|year)s?\\b`,
     'g'
   );
   let m: RegExpExecArray | null;
@@ -63,7 +71,8 @@ export function extractDurations(text: string): Set<string> {
     const n = /^\d/.test(m[1]) ? parseFloat(m[1]) : NUMBER_WORDS[m[1]];
     const business = !!m[2] && /business|working/.test(m[2]);
     const unit = m[3];
-    if (unit === 'day') out.add(`${n} ${business ? 'business days' : 'days'}`);
+    if (unit === 'hour') out.add(`${n} hours`);
+    else if (unit === 'day') out.add(`${n} ${business ? 'business days' : 'days'}`);
     else if (unit === 'week') out.add(business ? `${n * 5} business days` : `${n * 7} days`);
     else if (unit === 'month') out.add(`${n} months`);
     else out.add(`${n} years`);
@@ -115,6 +124,45 @@ export function extractPlaces(text: string): Set<string> {
       t = t.replace(re, ' ');
     }
   }
+  return out;
+}
+
+
+/**
+ * Money amounts, normalised to "<number> <unit>" where unit is one of
+ * "per hour" | "per day" | "per week" | "per month" | "fixed" | "amount".
+ * "$2 million" -> "2000000 amount"; "$85.00 per hour" -> "85 per hour".
+ */
+export function extractAmounts(text: string): Set<string> {
+  const t = text.toLowerCase();
+  const out = new Set<string>();
+  const re = /(?:\$|usd\s?|eur\s?|gbp\s?|£|€)\s?(\d[\d,]*(?:\.\d+)?)\s?(million|mm|m\b|billion|thousand|k\b)?(?:\s*(?:\/|per|an?|each)\s*(hour|hr|day|week|month|year))?/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(t)) !== null) {
+    let n = parseFloat(m[1].replace(/,/g, ''));
+    const mult = m[2];
+    if (mult === 'million' || mult === 'mm' || mult === 'm') n *= 1_000_000;
+    else if (mult === 'billion') n *= 1_000_000_000;
+    else if (mult === 'thousand' || mult === 'k') n *= 1_000;
+    let unit = 'amount';
+    if (m[3]) unit = m[3] === 'hr' ? 'per hour' : `per ${m[3]}`;
+    else {
+      const after = t.slice(m.index + m[0].length, m.index + m[0].length + 20);
+      const before = t.slice(Math.max(0, m.index - 30), m.index);
+      if (/^\s*(hourly|an hour)/.test(after)) unit = 'per hour';
+      else if (/(fixed|flat|lump[- ]sum)\s+(fee|price|amount|rate)\s*(of|:)?\s*$/.test(before)) unit = 'fixed';
+    }
+    out.add(`${n} ${unit}`);
+  }
+  return out;
+}
+
+/** "inclusive" / "exclusive" statements about whether amounts include taxes. */
+export function extractTaxBasis(text: string): Set<string> {
+  const t = text.toLowerCase();
+  const out = new Set<string>();
+  if (/(inclusive of|including)\s+(all\s+)?(applicable\s+)?(taxes|vat|gst|sales tax)|taxes?\s+(are|is|shall be)\s+included|all[- ]inclusive/.test(t)) out.add('inclusive');
+  if (/(exclusive of|exclud(e|es|ing)|plus|net of|before)\s+(all\s+)?(applicable\s+)?(taxes|vat|gst|sales tax)|taxes?\s+(are|is|shall be)\s+(excluded|additional|extra)|(vat|gst|sales tax)\s+(will|shall)\s+be\s+(added|charged|invoiced)/.test(t)) out.add('exclusive');
   return out;
 }
 
@@ -172,7 +220,21 @@ const PARTY: Family = [
   ['contractor', /\b(contractor|consultant|freelancer|service provider)\b/],
 ];
 
+const RATE_QUALIFIER: Family = [
+  ['overtime', /\b(overtime|after[- ]hours|weekend|holiday|rush|expedit\w*|premium|surcharge)\b/],
+  ['travel', /\b(travel|mileage|per diem|expenses?)\b/],
+  ['role', /\b(senior|junior|principal|lead|associate|designer|developer|engineer|analyst|consultant|project manager)\b/],
+  ['additional', /\b(additional|extra|out[- ]of[- ]scope|change order)\b/],
+];
+const INSURANCE_TYPE: Family = [
+  ['professional', /\b(professional|errors?\s*(and|&)\s*omissions|e\s*&\s*o)\b/],
+  ['general', /\b(general|public)\s+liability\b|\bcgl\b/],
+  ['cyber', /\bcyber\b/],
+];
+
 const TOPIC_SITUATION_FAMILIES: Record<string, Family[]> = {
+  'Rates & Amounts': [RATE_QUALIFIER],
+  'Minimum Insurance Coverage': [INSURANCE_TYPE],
   'Payment Terms': [PAYMENT_EVENT],
   'Termination for Convenience': [PHASE, PARTY],
   'Termination for Cause': [PHASE, BREACH_TYPE, PARTY],
@@ -192,7 +254,7 @@ function labelsFor(family: Family, text: string): Set<string> {
 // overdue-interest period is not the invoice payment period). Other specific
 // labels (milestone, deposit, ...) may be overrides of a general rule, so a
 // general-vs-specific pair stays UNCLEAR.
-const DISTINCT_LABELS = new Set(['late', 'expenses']);
+const DISTINCT_LABELS = new Set(['late', 'expenses', 'overtime', 'travel', 'additional']);
 
 type SituationRelation = 'SAME' | 'DIFFERENT' | 'UNCLEAR';
 
@@ -227,7 +289,12 @@ function quotesOf(fact: FactWithEvidence): string {
 }
 
 function valuesFor(kind: ValueKind, fact: FactWithEvidence): Set<string> {
-  const extract = kind === 'duration' ? extractDurations : kind === 'place' ? extractPlaces : extractDates;
+  const extract =
+    kind === 'duration' ? extractDurations
+    : kind === 'place' ? extractPlaces
+    : kind === 'amount' ? extractAmounts
+    : kind === 'taxbasis' ? extractTaxBasis
+    : extractDates;
   const fromSummary = extract(fact.summary || '');
   // Prefer the model's summary; fall back to the quoted source text.
   return fromSummary.size > 0 ? fromSummary : extract(quotesOf(fact));
@@ -271,7 +338,7 @@ export function compareFoundFacts(
   // Values: compare only like with like (days with days, months with months, ...).
   let shared = false;
   let overlap = false;
-  if (kind === 'duration') {
+  if (kind === 'duration' || kind === 'amount') {
     const unitOf = (v: string) => v.slice(v.indexOf(' ') + 1);
     const unitsA = new Set([...valsA].map(unitOf));
     const sharedUnits = [...new Set([...valsB].map(unitOf))].filter((u) => unitsA.has(u));
@@ -280,7 +347,7 @@ export function compareFoundFacts(
     if (!shared) {
       return {
         kind: 'UNCERTAIN',
-        detail: `periods use different units (${describe(valsA)} vs ${describe(valsB)}) and cannot be compared`,
+        detail: `values use different units (${describe(valsA)} vs ${describe(valsB)}) and cannot be compared`,
       };
     }
   } else {

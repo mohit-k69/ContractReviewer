@@ -1,4 +1,5 @@
 import { ContractCategory, ContractParty, EvidenceStatus } from './types';
+import { intelligenceFactPaths } from './intelligenceSchema';
 
 const VALID_EVIDENCE_STATUSES: Set<EvidenceStatus> = new Set([
   'FOUND',
@@ -88,6 +89,9 @@ const REQUIRED_FACT_PATHS: string[] = [
   'key_provisions.dispute_resolution.prevailing_party_legal_fees',
   'key_provisions.independent_contractor_affirmation',
   'key_provisions.entire_agreement',
+
+  // Contractor-intelligence groups (worker classification, data protection, insurance, subcontracting, tax, renewal, warranty)
+  ...intelligenceFactPaths(),
 ];
 
 /** Required arrays whose every element is a FactWithEvidence. */

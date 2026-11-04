@@ -18,8 +18,9 @@ import {
   PaymentAndCommercialTerms,
   ScopeAndDeliverables,
 } from './types';
+import { analyzeIntelligenceFacts } from './deterministicIntelligence';
 
-interface FlattenedElement {
+export interface FlattenedElement {
   id: string;
   source_block_ids: string[];
   source_block_id: string;
@@ -27,7 +28,7 @@ interface FlattenedElement {
   sectionTitle?: string;
 }
 
-function flattenDocumentElements(doc: NormalizedDocument): FlattenedElement[] {
+export function flattenDocumentElements(doc: NormalizedDocument): FlattenedElement[] {
   const elements: FlattenedElement[] = [];
 
   function collect(node: any, currentSectionTitle = '') {
@@ -590,7 +591,7 @@ export function analyzeContractDeterministically(
   }
 
   // 7. Key Provisions
-  const ipElements = findMatchingElements(elements, ['intellectual property', 'work made for hire', 'ownership', 'proprietary rights', 'inventions']);
+  const ipElements = findMatchingElements(elements, ['intellectual property', 'work made for hire', 'ownership', 'proprietary rights', 'inventions', 'work product', 'hereby assign', 'assigns to', 'copyright']);
   let ipOwnership: FactWithEvidence = createNotFoundFact('IP ownership terms not specified.');
   let ipPreExisting: FactWithEvidence = createNotFoundFact('Pre-existing IP / background tools not specified.');
   let ipLicense: FactWithEvidence = createNotFoundFact('No explicit license reservation stated.');
@@ -731,7 +732,7 @@ export function analyzeContractDeterministically(
   }
 
   // Limitation of Liability
-  const liabilityElements = findMatchingElements(elements, ['limitation of liability', 'liability cap', 'consequential damages', 'indirect damages', 'punitive damages']);
+  const liabilityElements = findMatchingElements(elements, ['limitation of liability', 'liability cap', 'consequential damages', 'indirect damages', 'punitive damages', 'aggregate liability', 'total liability', 'liability shall not exceed', 'liability shall be limited', 'liability under this agreement']);
   let liabilityCap: FactWithEvidence = createNotFoundFact('No aggregate liability cap stated.');
   let indirectDamages: FactWithEvidence = createNotFoundFact('No consequential damages waiver stated.');
   if (liabilityElements.length > 0) {
@@ -833,7 +834,10 @@ export function analyzeContractDeterministically(
           ],
         };
       }
-      if (/accrued|completed prior to termination|payment upon termination/i.test(te.text) && postTermPayment.status === 'NOT_FOUND') {
+      if (
+        /accrued|completed prior to termination|payment upon termination|(pay|paid|payment|compensat\w*)[^.]{0,100}(performed|rendered|completed|incurred)[^.]{0,80}(through|up to|prior to|before|until|as of)[^.]{0,30}(terminat|the termination date)|upon (any )?termination[^.]{0,80}(shall pay|shall be paid|compensat)/i.test(te.text) &&
+        postTermPayment.status === 'NOT_FOUND'
+      ) {
         postTermPayment = {
           status: 'FOUND',
           summary: te.text.slice(0, Math.min(te.text.length, 120)).trim(),
@@ -1033,6 +1037,7 @@ export function analyzeContractDeterministically(
       independent_contractor_affirmation: icAffirmation,
       entire_agreement: entireAgreement,
     },
+    ...analyzeIntelligenceFacts(elements),
     ambiguities_and_conflicts: [],
     omissions_and_missing_terms: omissions,
     stats: {

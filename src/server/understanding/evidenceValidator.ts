@@ -11,6 +11,7 @@ import {
   EvidenceReference,
   FactWithEvidence,
 } from './types';
+import { forEachIntelligenceFact } from './intelligenceSchema';
 
 /**
  * Recursively collects all source block IDs associated with a normalized element
@@ -388,6 +389,9 @@ export function validateUnderstandingResult(
     validateFact(kp.independent_contractor_affirmation, 'independent_contractor_affirmation');
     validateFact(kp.entire_agreement, 'entire_agreement');
   }
+
+  // 7b. Contractor-intelligence facts (worker classification, data, insurance, subcontracting, tax, renewal, warranty)
+  forEachIntelligenceFact(result, (fact, group, field) => validateFact(fact, `${group}.${field}`));
 
   // 8. Ambiguities & Conflicts evidence (counted in total facts and verification statistics)
   if (Array.isArray(result.ambiguities_and_conflicts)) {

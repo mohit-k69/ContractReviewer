@@ -122,6 +122,83 @@ export interface KeyContractualProvisions {
   entire_agreement: FactWithEvidence;
 }
 
+
+// ---------------------------------------------------------------------------
+// Contractor-intelligence fact groups. Every field is a FactWithEvidence:
+//   FOUND         -> the contract states it (summary + verbatim evidence required)
+//   NOT_FOUND     -> the whole document was searched and nothing states it
+//   AMBIGUOUS     -> a provision exists but is vague/incomplete
+//   CONFLICTING   -> sections disagree
+// Nothing is ever defaulted to FOUND or NOT_FOUND without being examined.
+// ---------------------------------------------------------------------------
+
+/** Contractual indicators of employment-like control (assessed together, never conclusive alone). */
+export interface WorkerClassificationIndicators {
+  prescribed_hours: FactWithEvidence; // Fixed/mandatory working hours or minimum availability
+  mandatory_location: FactWithEvidence; // Must work at the client's office/premises
+  direct_supervision: FactWithEvidence; // Client supervises/directs the person's work
+  exclusivity: FactWithEvidence; // Exclusivity / bar on working for other clients
+  no_delegation: FactWithEvidence; // Must perform personally; cannot delegate or subcontract
+  client_equipment: FactWithEvidence; // Must use client-provided equipment/systems
+  independent_business_restrictions: FactWithEvidence; // Limits on advertising, own business, brand, outside work
+  control_over_timing_and_manner: FactWithEvidence; // Client dictates how/when services are performed
+}
+
+export interface DataProtectionTerms {
+  handles_personal_data: FactWithEvidence; // Contract indicates the contractor accesses/processes personal or sensitive data
+  permitted_purposes: FactWithEvidence; // Purposes the data may be used for
+  security_obligations: FactWithEvidence; // Data confidentiality / security measures required
+  breach_notification: FactWithEvidence; // Duty to notify about breaches/incidents
+  return_or_deletion: FactWithEvidence; // Return/deletion of data after termination
+  third_party_access: FactWithEvidence; // Subcontractor / third-party / sub-processor access to data
+  cross_border_transfer: FactWithEvidence; // International transfer or data-location terms
+  processing_agreement: FactWithEvidence; // DPA / controller-processor / data processing agreement
+}
+
+export interface InsuranceTerms {
+  professional_indemnity: FactWithEvidence; // Professional indemnity / E&O insurance required
+  general_liability: FactWithEvidence; // Commercial/public general liability insurance required
+  cyber: FactWithEvidence; // Cyber insurance required
+  minimum_coverage: FactWithEvidence; // Minimum coverage limits
+  additional_insured: FactWithEvidence; // Additional insured / waiver of subrogation
+  evidence_of_insurance: FactWithEvidence; // Certificates / proof of insurance
+  post_termination_maintenance: FactWithEvidence; // Insurance to continue after termination
+}
+
+export interface SubcontractingTerms {
+  prohibition: FactWithEvidence; // Absolute ban on subcontracting/delegation (no consent route)
+  approval_requirement: FactWithEvidence; // Subcontracting allowed only with client approval/notice
+  permission: FactWithEvidence; // Subcontracting/delegation expressly permitted
+  delegation_restriction: FactWithEvidence; // Conditions/limits on delegating or replacing personnel
+  responsibility_for_subcontractors: FactWithEvidence; // Contractor responsible for subcontractor performance
+  liability_for_subcontractors: FactWithEvidence; // Contractor liable/indemnifies for subcontractor acts
+  flow_down_obligations: FactWithEvidence; // Subcontractors bound by confidentiality/data/IP terms
+}
+
+export interface TaxTerms {
+  contractor_income_tax: FactWithEvidence; // Contractor responsible for its own income/self-employment taxes
+  client_withholding: FactWithEvidence; // Client may withhold/deduct taxes
+  indirect_taxes: FactWithEvidence; // VAT / GST / sales tax treatment
+  tax_indemnification: FactWithEvidence; // Tax indemnity
+  amounts_tax_basis: FactWithEvidence; // Whether agreed amounts include or exclude taxes
+}
+
+export interface RenewalTerms {
+  auto_renewal: FactWithEvidence; // Automatic renewal
+  renewal_duration: FactWithEvidence; // Length of each renewal
+  non_renewal_notice: FactWithEvidence; // Notice needed to prevent renewal
+  unilateral_renewal: FactWithEvidence; // Renewal/extension at one party's option
+  renewal_pricing: FactWithEvidence; // Pricing changes on renewal
+}
+
+export interface WarrantyTerms {
+  performance_guarantee: FactWithEvidence; // Broad performance/quality guarantees
+  outcome_guarantee: FactWithEvidence; // Guarantees of business/financial outcomes
+  warranty_duration: FactWithEvidence; // How long warranties/defect liability last
+  repair_replace: FactWithEvidence; // Repair/replace/re-perform obligations
+  post_termination_warranty: FactWithEvidence; // Warranty/defect obligations surviving termination
+}
+
 export interface AmbiguityOrConflict {
   topic: string;
   description: string;
@@ -154,6 +231,13 @@ export interface ContractUnderstandingResult {
   payment_and_commercial: PaymentAndCommercialTerms;
   obligations: PartyObligations;
   key_provisions: KeyContractualProvisions;
+  worker_classification: WorkerClassificationIndicators;
+  data_protection: DataProtectionTerms;
+  insurance: InsuranceTerms;
+  subcontracting: SubcontractingTerms;
+  tax_details: TaxTerms;
+  renewal_details: RenewalTerms;
+  warranty_details: WarrantyTerms;
   ambiguities_and_conflicts: AmbiguityOrConflict[];
   omissions_and_missing_terms: OmissionOrMissingTerm[];
   stats: UnderstandingStats;

@@ -1,4 +1,9 @@
 import {
+  INTELLIGENCE_GROUP_KEYS,
+  INTELLIGENCE_SCHEMA,
+  IntelligenceField,
+} from './intelligenceSchema';
+import {
   BaseNormalizedElement,
   NormalizedClause,
   NormalizedDocument,
@@ -105,6 +110,17 @@ export function serializeNormalizedDocument(
   return lines.join('\n');
 }
 
+function buildIntelligenceSchemaText(): string {
+  const groups = INTELLIGENCE_GROUP_KEYS.map((g) => {
+    const fields = Object.entries(INTELLIGENCE_SCHEMA[g])
+      .map(([field, meta]) => `    "${field}": { "status": "...", "summary": "...", "evidence": [...] }, // ${(meta as IntelligenceField).description}`)
+      .join('\n');
+    return `  "${g}": {\n${fields}\n  },`;
+  });
+  return groups.join('\n');
+}
+const INTELLIGENCE_SCHEMA_TEXT = buildIntelligenceSchemaText();
+
 export const UNDERSTANDING_SYSTEM_PROMPT = `You are a specialized legal document analysis engine focusing on contract understanding and factual information extraction.
 
 CRITICAL SECURITY & BEHAVIORAL DIRECTIVES:
@@ -128,6 +144,12 @@ CRITICAL SECURITY & BEHAVIORAL DIRECTIVES:
    - If a provision contains contradictory or conflicting terms in different sections, set "status": "CONFLICTING" and include evidence references for all conflicting provisions.
    - If a term is vague, incomplete, or ambiguous (e.g. "fee to be mutually agreed later"), set "status": "AMBIGUOUS".
    - If a provision is clearly present and unambiguous, set "status": "FOUND".
+
+5. CONTRACTOR-INTELLIGENCE FIELDS (worker_classification, data_protection, insurance, subcontracting, tax_details, renewal_details, warranty_details):
+   - Every field is a fact object with "status", "summary", "evidence" (and optional "notes"). Every field is REQUIRED; never omit one.
+   - Extract ONLY what the contract states. FOUND = a clause states it (quote it). NOT_FOUND = nothing in the whole document states it (evidence must be []). AMBIGUOUS = a clause addresses it only vaguely. CONFLICTING = clauses disagree. Do not guess and do not default a field.
+   - Report indicators and terms as FACTS. Do NOT conclude that a worker is legally misclassified, that data is legally "personal data", that insurance or a tax is legally required, or that a clause is enforceable.
+   - A statement that the contract does NOT renew is NOT an automatic renewal. "Exclusive property" of IP is NOT exclusivity of services.
 
 OUTPUT FORMAT REQUIREMENTS:
 You must respond with a single, valid JSON object matching this schema. No markdown formatting outside of JSON.`;
@@ -246,6 +268,7 @@ JSON Schema to strictly adhere to:
     "independent_contractor_affirmation": { "status": "...", "summary": "...", "evidence": [...] },
     "entire_agreement": { "status": "...", "summary": "...", "evidence": [...] }
   },
+${INTELLIGENCE_SCHEMA_TEXT}
   "ambiguities_and_conflicts": [],
   "omissions_and_missing_terms": [
     { "provision_name": "...", "explanation": "..." }

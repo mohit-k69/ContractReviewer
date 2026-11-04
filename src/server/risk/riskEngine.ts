@@ -5,7 +5,29 @@ import {
   FactWithEvidence,
 } from '../understanding/types';
 import { extractDurations, extractPlaces } from '../understanding/conflictDetector';
+import { INTELLIGENCE_GROUP_KEYS } from '../understanding/intelligenceSchema';
 import { ClauseIndex } from './clauseIndex';
+import {
+  Analysis,
+  HIGH_STAKES,
+  KIND_RANK,
+  SEVERITY_RANK,
+  WHY_BY_CATEGORY,
+  max,
+  min,
+  toDays,
+  toMonths,
+} from './analysis';
+import { crossClauseRules, IP_ON_PAYMENT } from './crossClauseRules';
+import {
+  dataProtectionRules,
+  insuranceRules,
+  renewalRules,
+  subcontractingRules,
+  taxRules,
+  warrantyRules,
+  workerClassificationRules,
+} from './intelligenceRules';
 import {
   CategoryIndicator,
   ChecklistItem,
@@ -27,425 +49,6 @@ export const DISCLAIMER =
 
 export const OVERALL_RULE =
   'Review priority is the highest severity among all findings (High if any High finding, otherwise Medium if any Medium finding, otherwise Low). It is a rule-based summary, not a numerical score.';
-
-const SEVERITY_RANK: Record<RiskSeverity, number> = { High: 3, Medium: 2, Low: 1 };
-const KIND_RANK: Record<FindingKind, number> = {
-  CONTRADICTORY_PROVISIONS: 4,
-  RISK: 3,
-  MISSING_PROVISION: 2,
-  AMBIGUOUS_TERM: 1,
-};
-
-// ---------------------------------------------------------------------------
-// Fact registry (every fact the report can talk about)
-// ---------------------------------------------------------------------------
-
-interface FactRef {
-  key: string;
-  label: string;
-  category: RiskCategory;
-  fact: FactWithEvidence | undefined;
-}
-
-function collectFacts(u: ContractUnderstandingResult): FactRef[] {
-  const kp = u.key_provisions;
-  const pc = u.payment_and_commercial;
-  const sd = u.scope_and_deliverables;
-  const dt = u.dates_and_term;
-  return [
-    { key: 'governing_law', label: 'Governing law', category: 'Dispute Resolution & Governing Law', fact: u.classification?.governing_jurisdiction },
-    { key: 'fee_structure', label: 'Fee structure', category: 'Payment', fact: pc?.fee_structure },
-    { key: 'rates', label: 'Rates and amounts', category: 'Payment', fact: pc?.rates_and_amounts },
-    { key: 'invoicing', label: 'Invoicing schedule', category: 'Payment', fact: pc?.invoicing_schedule },
-    { key: 'payment_terms', label: 'Payment terms', category: 'Payment', fact: pc?.payment_terms_days },
-    { key: 'late_payment', label: 'Late payment terms', category: 'Payment', fact: pc?.late_payment_terms },
-    { key: 'expenses', label: 'Reimbursable expenses', category: 'Payment', fact: pc?.reimbursable_expenses },
-    { key: 'taxes', label: 'Taxes and withholding', category: 'Payment', fact: pc?.taxes_and_withholding },
-    { key: 'scope', label: 'Scope of work', category: 'Scope of Work', fact: sd?.scope_description },
-    { key: 'change_order', label: 'Change-order process', category: 'Scope of Work', fact: sd?.change_order_mechanism },
-    { key: 'acceptance', label: 'Acceptance criteria', category: 'Scope of Work', fact: sd?.acceptance_criteria },
-    { key: 'effective_date', label: 'Effective date', category: 'Termination', fact: dt?.effective_date },
-    { key: 'execution_date', label: 'Execution date', category: 'Termination', fact: dt?.execution_date },
-    { key: 'commencement_date', label: 'Commencement date', category: 'Termination', fact: dt?.commencement_date },
-    { key: 'expiration_date', label: 'Expiration date', category: 'Termination', fact: dt?.expiration_date },
-    { key: 'term_duration', label: 'Term / duration', category: 'Termination', fact: dt?.term_duration },
-    { key: 'renewal', label: 'Renewal terms', category: 'Termination', fact: dt?.renewal_terms },
-    { key: 'term_convenience', label: 'Termination for convenience', category: 'Termination', fact: kp?.termination?.termination_for_convenience },
-    { key: 'term_cause', label: 'Termination for cause', category: 'Termination', fact: kp?.termination?.termination_for_cause },
-    { key: 'post_term_payment', label: 'Payment after termination', category: 'Termination', fact: kp?.termination?.post_termination_payment },
-    { key: 'ip_ownership', label: 'IP ownership', category: 'Intellectual Property', fact: kp?.intellectual_property?.ownership },
-    { key: 'ip_preexisting', label: 'Pre-existing IP', category: 'Intellectual Property', fact: kp?.intellectual_property?.pre_existing_ip },
-    { key: 'ip_license', label: 'IP license', category: 'Intellectual Property', fact: kp?.intellectual_property?.license_granted },
-    { key: 'liability_cap', label: 'Liability cap', category: 'Liability & Indemnification', fact: kp?.limitation_of_liability?.liability_cap },
-    { key: 'indirect_damages', label: 'Exclusion of indirect damages', category: 'Liability & Indemnification', fact: kp?.limitation_of_liability?.exclusion_of_indirect_damages },
-    { key: 'indemnity_contractor', label: 'Contractor indemnification', category: 'Liability & Indemnification', fact: kp?.indemnification?.contractor_indemnification },
-    { key: 'indemnity_client', label: 'Client indemnification', category: 'Liability & Indemnification', fact: kp?.indemnification?.client_indemnification },
-    { key: 'warranties', label: 'Warranties and disclaimers', category: 'Liability & Indemnification', fact: kp?.warranties_and_disclaimers },
-    { key: 'conf_definition', label: 'Confidential information definition', category: 'Confidentiality', fact: kp?.confidentiality?.definition },
-    { key: 'conf_duration', label: 'Confidentiality duration', category: 'Confidentiality', fact: kp?.confidentiality?.duration },
-    { key: 'conf_carveouts', label: 'Confidentiality exclusions', category: 'Confidentiality', fact: kp?.confidentiality?.carveouts },
-    { key: 'non_compete', label: 'Non-compete', category: 'Non-Compete, Exclusivity & Non-Solicitation', fact: kp?.non_compete },
-    { key: 'non_solicit', label: 'Non-solicitation', category: 'Non-Compete, Exclusivity & Non-Solicitation', fact: kp?.non_solicitation },
-    { key: 'dispute_method', label: 'Dispute resolution method', category: 'Dispute Resolution & Governing Law', fact: kp?.dispute_resolution?.method },
-    { key: 'venue', label: 'Venue and forum', category: 'Dispute Resolution & Governing Law', fact: kp?.dispute_resolution?.venue_and_forum },
-    { key: 'legal_fees', label: 'Legal fees', category: 'Dispute Resolution & Governing Law', fact: kp?.dispute_resolution?.prevailing_party_legal_fees },
-  ];
-}
-
-
-/**
- * Safety net for missing-provision claims. The extraction stage can miss a clause that uses unusual
- * wording, so before reporting "missing" the engine searches the real document text for wording that
- * may address the topic. If found, the finding is downgraded to an unconfirmed term that cites that clause.
- */
-const CORROBORATION: Record<string, RegExp> = {
-  'payment.no_fee': /\$\s?\d|\b(usd|eur|gbp)\s?\d|\d+\s?(dollars|per (hour|day|month|week)|\/\s?(hr|hour))|hourly rate|fixed (fee|price)|flat fee|rate of|compensation|retainer/i,
-  'payment.no_rate': /\$\s?\d|rate of|per (hour|day|month)|\/\s?(hr|hour)|fixed (fee|price)/i,
-  'payment.no_deadline': /\bnet\s*\d+|within\s+\w+(\s*\(\d+\))?\s+(business\s+)?days|days\s+(of|after|from)\s+(the\s+)?(receipt|invoice)|due\s+(on|upon)\s+receipt|payable\s+(within|upon)/i,
-  'payment.no_late_fee': /late\s+(fee|charge|payment)|interest\s+(on|at)|overdue/i,
-  'payment.no_expenses': /reimburs|out-of-pocket|expenses/i,
-  'payment.no_invoicing': /\binvoic/i,
-  'scope.no_scope': /\bservices\b|deliverable|statement of work|exhibit a\b/i,
-  'scope.no_change_order': /change\s+(order|request)|modif(y|ication)[^.]{0,40}scope|\bamend/i,
-  'scope.no_acceptance': /\baccept(ance|ed)?\b|\bapprov(e|al)\b|review period|\breject/i,
-  'termination.no_convenience': /terminat[^.]{0,80}(notice|without cause|convenience|any time)|(notice|convenience)[^.]{0,80}terminat/i,
-  'termination.no_final_payment': /(paid|payment|compensat)[^.]{0,80}(terminat|prior to|up to)|terminat[^.]{0,120}(paid|payment|compensat|fees)/i,
-  'ip.no_ownership': /\bown(s|ed|ership)?\b|\bassign|work(s)? made for hire|work product|intellectual property|copyright/i,
-  'ip.no_preexisting': /pre-?existing|prior (work|inventions|ip)|background (ip|materials)|retain(s)? (all )?(rights|ownership)/i,
-  'liability.no_cap': /liabilit(y|ies)(?!\s+compan)[^.]{0,100}(limit|exceed|\bcap\b)|(limit(ed|ation)?|\bcap(ped)?\b)[^.]{0,60}liabilit(y|ies)(?!\s+compan)|aggregate liability/i,
-  'liability.no_indirect_exclusion': /(consequential|indirect|incidental|special|punitive)\s+damages|lost profits/i,
-  'liability.no_client_indemnity': /(company|client|customer)[^.]{0,40}(indemnify|hold harmless)/i,
-  'confidentiality.no_clause': /confidential|non-?disclosure|proprietary information/i,
-  'confidentiality.no_exclusions': /publicly (known|available)|public domain|independently developed|already (known|in (its|the) possession)|required by law/i,
-  'dispute.no_governing_law': /governed by|governing law|laws of (the )?(state|commonwealth|republic)|jurisdiction/i,
-  'dispute.no_process': /arbitrat|mediat|\bcourts?\b|venue|jurisdiction|litigation/i,
-};
-
-// ---------------------------------------------------------------------------
-// Analysis context: verified evidence + text helpers
-// ---------------------------------------------------------------------------
-
-/** The sentence of `text` containing the match at [index, index+length) - always a verbatim substring. */
-function sentenceAround(text: string, index: number, length: number): string {
-  const start = Math.max(text.lastIndexOf('. ', index) + 1, 0);
-  const endIdx = text.indexOf('. ', index + length);
-  const end = endIdx === -1 ? text.length : endIdx + 1;
-  return text.slice(start, end).trim();
-}
-
-class Analysis {
-  readonly findings: RiskFinding[] = [];
-  readonly facts: Record<string, FactWithEvidence | undefined> = {};
-  readonly fallback: boolean;
-  readonly fullCoverage: boolean;
-  readonly sectionCount: number;
-  readonly factRefs: FactRef[];
-
-  constructor(readonly u: ContractUnderstandingResult, readonly clauses: ClauseIndex) {
-    this.fallback = u.analysis_source === 'DETERMINISTIC_FALLBACK';
-    this.sectionCount = u.total_sections_in_document ?? u.processed_sections?.length ?? 0;
-    this.fullCoverage =
-      u.processing_status === 'COMPLETE' && (u.coverage_percentage === undefined || u.coverage_percentage >= 100);
-    this.factRefs = collectFacts(u);
-    for (const f of this.factRefs) this.facts[f.key] = f.fact;
-  }
-
-  /** Verified references only: unverified quotes are never shown or used as evidence. */
-  verifiedRefs(refs: EvidenceReference[] | undefined): EvidenceReference[] {
-    return (refs || []).filter((r) => r && r.is_verified === true);
-  }
-
-  /**
-   * Converts verified references into report evidence. If a reference only cites a heading (for example a
-   * section title) and a `focus` pattern is given, the specific child clause that matches the focus is cited
-   * instead, because a heading alone does not show what the contract actually says.
-   */
-  toEvidence(refs: EvidenceReference[] | undefined, focus?: RegExp): FindingEvidence[] {
-    const seen = new Set<string>();
-    const out: FindingEvidence[] = [];
-    const push = (e: FindingEvidence) => {
-      const key = `${e.element_id}::${e.source_block_id}::${e.exact_quote}`;
-      if (seen.has(key)) return;
-      seen.add(key);
-      out.push(e);
-    };
-
-    for (const r of this.verifiedRefs(refs)) {
-      const clause = this.clauses.get(r.element_id);
-      const base: FindingEvidence = {
-        element_id: r.element_id,
-        source_block_id: r.source_block_id,
-        exact_quote: r.exact_quote,
-        clause_label: clause?.label,
-        clause_text: clause?.text,
-      };
-
-      const headingOnly =
-        !!clause && clause.descendant_ids.length > 0 && clause.text.trim().length <= r.exact_quote.trim().length + 2;
-      if (headingOnly && focus) {
-        const children: FindingEvidence[] = [];
-        for (const did of clause!.descendant_ids) {
-          const d = this.clauses.get(did);
-          if (!d) continue;
-          for (const block of d.blocks) {
-            if (!focus.test(block.text)) continue;
-            const quote = block.text.trim().slice(0, 400);
-            if (quote) {
-              children.push({
-                element_id: did,
-                source_block_id: block.id,
-                exact_quote: quote,
-                clause_label: d.label,
-                clause_text: d.text,
-              });
-            }
-          }
-        }
-        if (children.length > 0) {
-          children.slice(0, 2).forEach(push);
-          continue; // the heading adds nothing once the real clause is cited
-        }
-      }
-      // Point the highlighted quote at the wording that triggered the finding when the stored quote
-      // (e.g. just "Net 75") does not contain it. Still a verbatim substring of the source block.
-      if (focus && clause && !new RegExp(focus.source, focus.flags.replace('g', '')).test(r.exact_quote)) {
-        const block = clause.blocks.find((b) => b.id === r.source_block_id);
-        const m = block ? new RegExp(focus.source, focus.flags.replace('g', '')).exec(block.text) : null;
-        if (block && m) {
-          const sentence = sentenceAround(block.text, m.index, m[0].length);
-          if (sentence && block.text.includes(sentence)) {
-            push({ ...base, exact_quote: sentence });
-            continue;
-          }
-        }
-      }
-      push(base);
-    }
-    return out;
-  }
-
-  evidenceOf(...facts: Array<FactWithEvidence | undefined>): FindingEvidence[] {
-    return this.toEvidence(facts.flatMap((f) => f?.evidence || []));
-  }
-
-  /** Like evidenceOf, but resolves heading-only citations to the child clause matching `focus`. */
-  evidenceFocused(focus: RegExp, ...facts: Array<FactWithEvidence | undefined>): FindingEvidence[] {
-    return this.toEvidence(facts.flatMap((f) => f?.evidence || []), focus);
-  }
-
-  /** Does this fact say FOUND and is it backed by at least one verified quote? */
-  isEstablished(f: FactWithEvidence | undefined): f is FactWithEvidence {
-    return !!f && f.status === 'FOUND' && this.verifiedRefs(f.evidence).length > 0;
-  }
-
-  /** Searchable text: the model/extractor summary plus verified quotes (narrow) and full clause text (wide). */
-  text(f: FactWithEvidence | undefined, wide = true): string {
-    if (!f) return '';
-    const parts = [f.summary || ''];
-    for (const r of this.verifiedRefs(f.evidence)) {
-      parts.push(r.exact_quote || '');
-      if (wide) parts.push(this.clauses.get(r.element_id)?.full_text || '');
-    }
-    return parts.join(' ').toLowerCase();
-  }
-
-  /**
-   * Searches the real document text (word-for-word) for wording matching `pattern`. Every returned quote is
-   * a verbatim substring of one of the element's own source blocks, so it satisfies Phase 2C verification.
-   */
-  findInDocument(pattern: RegExp, limit = 2): FindingEvidence[] {
-    const out: FindingEvidence[] = [];
-    const seen = new Set<string>();
-    for (const [elementId, info] of this.clauses) {
-      for (const block of info.blocks) {
-        const m = pattern.exec(block.text);
-        if (!m) continue;
-        // Quote the whole sentence containing the match (a verbatim substring of the block).
-        const quote = sentenceAround(block.text, m.index, m[0].length);
-        if (!quote || !block.text.includes(quote)) continue;
-        const key = `${block.id}::${quote}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        out.push({
-          element_id: elementId,
-          source_block_id: block.id,
-          exact_quote: quote,
-          clause_label: info.label,
-          clause_text: info.text,
-        });
-        if (out.length >= limit) return out;
-      }
-    }
-    return out;
-  }
-
-  /** Missing-provision findings may only be asserted when the WHOLE document was analyzed. */
-  isMissing(f: FactWithEvidence | undefined): boolean {
-    return this.fullCoverage && !!f && f.status === 'NOT_FOUND';
-  }
-
-  private confidence(
-    kind: FindingKind,
-    evidence: FindingEvidence[],
-    opts: { patternBased?: boolean }
-  ): FindingConfidence {
-    const reasons: string[] = [];
-    let level: ConfidenceLevel = 'High';
-    const downgrade = (to: ConfidenceLevel) => {
-      const order: ConfidenceLevel[] = ['Low', 'Medium', 'High'];
-      if (order.indexOf(to) < order.indexOf(level)) level = to;
-    };
-
-    if (kind === 'MISSING_PROVISION') {
-      reasons.push(
-        `All ${this.sectionCount || 'analyzed'} sections were analyzed and no matching provision was found.`
-      );
-    } else if (evidence.length === 0) {
-      downgrade('Low');
-      reasons.push('No verified quote supports this finding.');
-    } else {
-      reasons.push(
-        `${evidence.length} supporting quote${evidence.length === 1 ? '' : 's'} verified word-for-word against the contract text.`
-      );
-    }
-
-    if (opts.patternBased) {
-      downgrade('Medium');
-      reasons.push('Flagged from the wording of the clause; the exact legal effect depends on the full text.');
-    }
-    if (this.fallback) {
-      downgrade('Medium');
-      reasons.push('Terms were extracted by the built-in rule engine because AI analysis was unavailable.');
-    }
-    if (kind === 'AMBIGUOUS_TERM' || kind === 'CONTRADICTORY_PROVISIONS') {
-      reasons.push('Carried over from the contract-understanding stage, which could not settle on a single reading.');
-    }
-    return { level, reasons };
-  }
-
-  add(p: {
-    rule_id: string;
-    category: RiskCategory;
-    kind: FindingKind;
-    severity: RiskSeverity;
-    title: string;
-    explanation: string;
-    why: string;
-    suggestion: string;
-    evidence?: FindingEvidence[];
-    searched?: string; // for missing provisions
-    patternBased?: boolean;
-    uncertainty?: string;
-  }): void {
-    if (this.findings.some((f) => f.id === p.rule_id)) return;
-
-    // Cross-check a "missing" claim against the real document text before asserting it.
-    let corroboration: FindingEvidence[] = [];
-    if (p.kind === 'MISSING_PROVISION' && CORROBORATION[p.rule_id]) {
-      corroboration = this.findInDocument(CORROBORATION[p.rule_id]);
-    }
-    if (corroboration.length > 0) {
-      if (p.severity === 'Low') return; // wording exists; a Low "missing" claim would only be noise
-      const topic = p.searched || 'this term';
-      this.addResolved({
-        ...p,
-        rule_id: `${p.rule_id}.unconfirmed`,
-        kind: 'AMBIGUOUS_TERM',
-        severity: 'Medium',
-        title: `Possible clause on ${topic} found but not confirmed`,
-        explanation: `The contract analysis did not identify ${topic}, but the document contains wording that may address it (see the cited clause). It could not be confirmed automatically.`,
-        suggestion: `Read the cited clause and confirm it clearly covers ${topic}. If it does not, ask for it to be added or clarified.`,
-        evidence: corroboration,
-        patternBased: true,
-        uncertainty: 'Matched by wording; the cited clause may not actually cover this topic.',
-      });
-      return;
-    }
-    this.addResolved(p);
-  }
-
-  private addResolved(p: {
-    rule_id: string;
-    category: RiskCategory;
-    kind: FindingKind;
-    severity: RiskSeverity;
-    title: string;
-    explanation: string;
-    why: string;
-    suggestion: string;
-    evidence?: FindingEvidence[];
-    searched?: string;
-    patternBased?: boolean;
-    uncertainty?: string;
-  }): void {
-    if (this.findings.some((f) => f.id === p.rule_id)) return;
-    // Hard rule: a missing provision NEVER carries evidence.
-    const evidence = p.kind === 'MISSING_PROVISION' ? [] : p.evidence || [];
-    const uncertaintyParts: string[] = [];
-    if (p.kind === 'MISSING_PROVISION') {
-      uncertaintyParts.push(
-        'The term may appear under unusual wording or in an exhibit or separate document that is not part of this text.'
-      );
-    }
-    if (p.patternBased) {
-      uncertaintyParts.push('This is flagged from phrase matching; read the full clause to confirm.');
-    }
-    if (this.fallback) {
-      uncertaintyParts.push('AI-assisted extraction was unavailable, so a nuance may have been missed.');
-    }
-    if (p.uncertainty) uncertaintyParts.push(p.uncertainty);
-
-    this.findings.push({
-      id: p.rule_id,
-      rule_id: p.rule_id,
-      category: p.category,
-      kind: p.kind,
-      severity: p.severity,
-      title: p.title,
-      explanation: p.explanation,
-      why_it_matters: p.why,
-      evidence,
-      evidence_note:
-        p.kind === 'MISSING_PROVISION'
-          ? `No clause was found for ${p.searched || 'this term'}, so no contract text is cited. This finding reflects an absence, not a quotation.`
-          : evidence.length === 0
-          ? 'No verified quote is available for this finding.'
-          : undefined,
-      suggestion: p.suggestion,
-      confidence: this.confidence(p.kind, evidence, { patternBased: p.patternBased }),
-      uncertainty: uncertaintyParts.length ? uncertaintyParts.join(' ') : undefined,
-    });
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Parsing helpers
-// ---------------------------------------------------------------------------
-
-function toDays(values: Set<string>): number[] {
-  const out: number[] = [];
-  for (const v of values) {
-    const [n, unit] = v.split(' ');
-    if (unit === 'days') out.push(parseFloat(n));
-  }
-  return out;
-}
-
-function toMonths(values: Set<string>): number[] {
-  const out: number[] = [];
-  for (const v of values) {
-    const [n, ...rest] = v.split(' ');
-    const unit = rest.join(' ');
-    const num = parseFloat(n);
-    if (unit === 'months') out.push(num);
-    else if (unit === 'years') out.push(num * 12);
-    else if (unit === 'days') out.push(num / 30);
-  }
-  return out;
-}
-
-const max = (xs: number[]): number | undefined => (xs.length ? Math.max(...xs) : undefined);
-const min = (xs: number[]): number | undefined => (xs.length ? Math.min(...xs) : undefined);
 
 // ---------------------------------------------------------------------------
 // Rules
@@ -774,7 +377,9 @@ function ipRules(a: Analysis): void {
     const t = a.text(ip_ownership);
     const onPayment = /(upon|after|subject to|conditioned on)[^.]{0,30}(full |final |complete )?payment/.test(t);
     const early = /hereby assign|upon creation|as (it is|they are) created|immediately|automatically/.test(t);
-    if (early && !onPayment) {
+    // If another clause says title passes only on payment, the contradiction rule reports it instead
+    const onPaymentElsewhere = a.searchEvidence(IP_ON_PAYMENT, 1).length > 0;
+    if (early && !onPayment && !onPaymentElsewhere) {
       a.add({
         rule_id: 'ip.transfer_before_payment',
         category: c, kind: 'RISK', severity: 'Medium',
@@ -884,7 +489,7 @@ function liabilityRules(a: Analysis): void {
   if (a.isEstablished(warranties) && /guarantee|error[- ]free|uninterrupted|fit(ness)? for (a )?(particular )?purpose|free (from|of) (all )?(defects|errors|bugs)|meet(s)? all|perpetual(ly)?/.test(a.text(warranties))) {
     a.add({
       rule_id: 'liability.broad_warranty',
-      category: c, kind: 'RISK', severity: 'Medium',
+      category: 'Warranties', kind: 'RISK', severity: 'Medium',
       title: 'Broad warranties or guarantees',
       explanation: 'The contract asks you to guarantee results such as error-free or fit-for-purpose work.',
       why: 'No complex work is entirely defect-free, so such guarantees can expose you to claims.',
@@ -1074,27 +679,6 @@ function disputeRules(a: Analysis): void {
 // Ambiguous & contradictory provisions (carried over from Phase 2C)
 // ---------------------------------------------------------------------------
 
-const HIGH_STAKES = new Set<RiskCategory>([
-  'Payment',
-  'Scope of Work',
-  'Termination',
-  'Intellectual Property',
-  'Liability & Indemnification',
-  'Non-Compete, Exclusivity & Non-Solicitation',
-  'Dispute Resolution & Governing Law',
-]);
-
-const WHY_BY_CATEGORY: Record<RiskCategory, string> = {
-  Payment: 'Unclear payment terms make it hard to know what you will be paid and when.',
-  'Scope of Work': 'Unclear scope makes it difficult to know what you are expected to deliver for the agreed fee.',
-  Termination: 'Unclear exit terms affect how and when the engagement can end and what you are paid.',
-  'Intellectual Property': 'Unclear ownership terms can lead to disputes over who may use the work.',
-  'Liability & Indemnification': 'Unclear liability terms can leave you responsible for more than you expect.',
-  Confidentiality: 'Unclear confidentiality terms make it hard to know what you may and may not disclose.',
-  'Non-Compete, Exclusivity & Non-Solicitation': 'Unclear restrictions could limit the clients you may work with.',
-  'Dispute Resolution & Governing Law': 'Unclear dispute terms add cost and uncertainty if a disagreement arises.',
-};
-
 export function categoryForText(text: string): RiskCategory {
   const t = text.toLowerCase();
   if (/payment|invoice|fee|rate|compensation|expense|tax/.test(t)) return 'Payment';
@@ -1214,7 +798,38 @@ function buildKeyTerms(a: Analysis): KeyTerm[] {
     term('Governing law', u.classification?.governing_jurisdiction),
     term('Dispute resolution', kp?.dispute_resolution?.method),
   ];
-  return terms.filter((t): t is KeyTerm => t !== null);
+  // Contractor-intelligence terms are listed only when the contract actually states something
+  // (FOUND / AMBIGUOUS / CONFLICTING); absent terms are reported as findings where relevant, not as blank rows.
+  const present = (label: string, f: FactWithEvidence | undefined): KeyTerm | null => {
+    const t = term(label, f);
+    return t && t.status !== 'NOT_FOUND' && t.status !== 'NOT_APPLICABLE' ? t : null;
+  };
+  const rd = u.renewal_details;
+  const ins = u.insurance;
+  const dp = u.data_protection;
+  const sub = u.subcontracting;
+  const tx = u.tax_details;
+  const wd = u.warranty_details;
+  const intelligenceTerms: Array<KeyTerm | null> = [
+    present('Automatic renewal', rd?.auto_renewal),
+    present('Renewal length', rd?.renewal_duration),
+    present('Notice to stop renewal', rd?.non_renewal_notice),
+    present('Handles personal data', dp?.handles_personal_data),
+    present('Data breach notification', dp?.breach_notification),
+    present('Data return or deletion', dp?.return_or_deletion),
+    present('Professional indemnity insurance', ins?.professional_indemnity),
+    present('General liability insurance', ins?.general_liability),
+    present('Cyber insurance', ins?.cyber),
+    present('Minimum insurance coverage', ins?.minimum_coverage),
+    present('Subcontracting banned', sub?.prohibition),
+    present('Subcontracting needs approval', sub?.approval_requirement),
+    present('Subcontracting permitted', sub?.permission),
+    present('Contractor pays own income tax', tx?.contractor_income_tax),
+    present('Client tax withholding', tx?.client_withholding),
+    present('Fees and taxes', tx?.amounts_tax_basis),
+    present('Warranty period', wd?.warranty_duration),
+  ];
+  return [...terms, ...intelligenceTerms].filter((t): t is KeyTerm => t !== null);
 }
 
 function buildChecklist(a: Analysis, findings: RiskFinding[]): ChecklistItem[] {
@@ -1327,7 +942,18 @@ export function analyzeContractRisk(
   confidentialityRules(a);
   restrictionRules(a);
   disputeRules(a);
+  // Phase 2C ambiguities/conflicts first, so the cross-clause rules below never restate them
   ambiguityRules(a);
+
+  // Contractor intelligence: single-fact rules, then comparisons across clauses
+  workerClassificationRules(a);
+  dataProtectionRules(a);
+  insuranceRules(a);
+  subcontractingRules(a);
+  taxRules(a);
+  renewalRules(a);
+  warrantyRules(a);
+  crossClauseRules(a);
 
   const findings = [...a.findings].sort(
     (x, y) =>
@@ -1353,6 +979,11 @@ export function analyzeContractRisk(
   if (!a.fullCoverage) {
     limitations.push(
       `Only ${understanding.coverage_percentage ?? 0}% of the document was analyzed. Missing-provision checks were skipped because a provision may exist in the unanalyzed part.`
+    );
+  }
+  if (INTELLIGENCE_GROUP_KEYS.some((g) => !(understanding as any)[g])) {
+    limitations.push(
+      'Some contractor-intelligence areas (worker classification, data protection, insurance, subcontracting, tax, renewal, warranties) were not analyzed in this result, so no findings for them are reported. This is not evidence that those terms are absent.'
     );
   }
   if (a.fallback) {

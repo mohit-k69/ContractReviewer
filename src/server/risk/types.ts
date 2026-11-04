@@ -10,7 +10,14 @@ export type RiskCategory =
   | 'Liability & Indemnification'
   | 'Confidentiality'
   | 'Non-Compete, Exclusivity & Non-Solicitation'
-  | 'Dispute Resolution & Governing Law';
+  | 'Dispute Resolution & Governing Law'
+  | 'Worker Classification'
+  | 'Data Protection & Security'
+  | 'Insurance'
+  | 'Subcontracting & Delegation'
+  | 'Tax'
+  | 'Renewal'
+  | 'Warranties';
 
 export const RISK_CATEGORIES: RiskCategory[] = [
   'Payment',
@@ -21,6 +28,13 @@ export const RISK_CATEGORIES: RiskCategory[] = [
   'Confidentiality',
   'Non-Compete, Exclusivity & Non-Solicitation',
   'Dispute Resolution & Governing Law',
+  'Worker Classification',
+  'Data Protection & Security',
+  'Insurance',
+  'Subcontracting & Delegation',
+  'Tax',
+  'Renewal',
+  'Warranties',
 ];
 
 /**

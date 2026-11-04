@@ -12,6 +12,7 @@ import {
 } from '../understanding/types';
 import { analyzeContractRisk } from './riskEngine';
 import { ClauseIndex } from './clauseIndex';
+import { INTELLIGENCE_GROUP_KEYS, INTELLIGENCE_SCHEMA } from '../understanding/intelligenceSchema';
 import { RiskFinding } from './types';
 import { generateRiskReport, getCachedRiskReport } from './riskService';
 import { createApp, initServerRuntime } from '../app';
@@ -48,6 +49,16 @@ const withStatus = (status: EvidenceStatus, summary: string, ...evidence: Eviden
   summary,
   evidence,
 });
+
+/** Every contractor-intelligence fact examined and found absent. */
+function intelligenceNotFound(): any {
+  const out: any = {};
+  for (const g of INTELLIGENCE_GROUP_KEYS) {
+    out[g] = {};
+    for (const f of Object.keys(INTELLIGENCE_SCHEMA[g])) out[g][f] = missing();
+  }
+  return out;
+}
 
 /** An understanding result where every fact is NOT_FOUND, analyzed completely by the AI model. */
 function baseUnderstanding(over: Partial<ContractUnderstandingResult> = {}): ContractUnderstandingResult {
@@ -93,6 +104,7 @@ function baseUnderstanding(over: Partial<ContractUnderstandingResult> = {}): Con
       independent_contractor_affirmation: missing(),
       entire_agreement: missing(),
     },
+    ...intelligenceNotFound(),
     ambiguities_and_conflicts: [],
     omissions_and_missing_terms: [],
     stats: {
@@ -488,7 +500,21 @@ test.describe('Phase 3 — overview and report', () => {
     medium.payment_and_commercial.payment_terms_days = found('Net 50 days', verified('pay', 'b-pay', 'Net 50 days'));
     const r = analyzeContractRisk(medium);
     assert.equal(r.overview.review_priority, 'Medium');
-    assert.equal(r.overview.category_indicators.length, 8);
+    // The original eight areas are all still reported, alongside the contractor-intelligence areas
+    const areas = r.overview.category_indicators.map((c) => c.category);
+    for (const original of [
+      'Payment', 'Scope of Work', 'Termination', 'Intellectual Property', 'Liability & Indemnification',
+      'Confidentiality', 'Non-Compete, Exclusivity & Non-Solicitation', 'Dispute Resolution & Governing Law',
+    ]) {
+      assert.ok(areas.includes(original as any), `missing area ${original}`);
+    }
+    for (const added of [
+      'Worker Classification', 'Data Protection & Security', 'Insurance', 'Subcontracting & Delegation',
+      'Tax', 'Renewal', 'Warranties',
+    ]) {
+      assert.ok(areas.includes(added as any), `missing area ${added}`);
+    }
+    assert.equal(areas.length, 15);
     assert.equal(r.overview.category_indicators.find((c) => c.category === 'Payment')?.level, 'Medium');
     assert.match(r.overview.rule, /highest severity/);
     assert.ok(r.overview.rationale.length >= 1);

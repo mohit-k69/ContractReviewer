@@ -157,6 +157,14 @@ export async function understandContractWithGemini(
         payment_and_commercial: parsedJson.payment_and_commercial,
         obligations: parsedJson.obligations,
         key_provisions: parsedJson.key_provisions,
+        // Validated as required by validateGeminiUnderstandingResponse: never defaulted here
+        worker_classification: parsedJson.worker_classification,
+        data_protection: parsedJson.data_protection,
+        insurance: parsedJson.insurance,
+        subcontracting: parsedJson.subcontracting,
+        tax_details: parsedJson.tax_details,
+        renewal_details: parsedJson.renewal_details,
+        warranty_details: parsedJson.warranty_details,
         ambiguities_and_conflicts: parsedJson.ambiguities_and_conflicts,
         omissions_and_missing_terms: parsedJson.omissions_and_missing_terms,
         stats: {

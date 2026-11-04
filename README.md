@@ -23,6 +23,18 @@ paste / upload ─► security inspection ─► extraction ─► normalization
   * Overall *review priority* = the highest severity among findings. There is no numeric score and no claim about
     legal enforceability. Only evidence that passed word-for-word verification is ever shown.
   * "Missing" claims are only made when the whole document was analyzed, and are cross-checked against the actual text.
+* **Contractor intelligence** (understanding schema + risk rules) covers the areas below. Each is extracted as facts
+  (status, summary, verbatim evidence) and then checked by deterministic rules:
+  worker-classification indicators (assessed together, never conclusive alone, jurisdiction-aware), data protection &
+  security (missing terms are only flagged when the contract involves data), insurance (no assumption that every
+  contractor needs every cover), subcontracting & delegation, tax (no assumption about any country's rules),
+  renewal, and warranties.
+* **Cross-clause analysis** compares related terms across clauses (payment deadline vs acceptance, scope vs change
+  orders, termination vs payment for completed work, IP transfer vs full payment, liability cap vs indemnity,
+  insurance vs cap/indemnity, confidentiality duration vs survival, renewal vs termination and term dates, rates,
+  payment deadlines, effective dates and governing law). A contradiction is only reported when both sides are
+  genuinely incompatible and each has a verified quote; clauses that qualify or complement each other are not
+  flagged, and undecidable cases are reported as *ambiguous*.
 * No AI call is made by Phase 3. Without `GEMINI_API_KEY` the understanding stage uses the built-in deterministic
   engine, so the whole demo works offline.
 

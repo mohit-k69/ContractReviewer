@@ -1,0 +1,81 @@
+INDEPENDENT CONTRACTOR SERVICES AGREEMENT
+
+This Independent Contractor Services Agreement ("Agreement") is made effective as of March 1, 2026, by and between Harbor Retail Group Inc., a California corporation ("Company"), and Sam Ortega, an individual ("Contractor").
+
+SERVICES AND WORKING ARRANGEMENTS
+
+1.1 Services. Contractor shall provide e-commerce platform development services described in Exhibit A for the Company.
+
+1.2 Working Hours. Contractor shall work from 9:00 a.m. to 5:00 p.m., Monday through Friday, and must be available on the Company chat during those hours.
+
+1.3 Location. Contractor shall perform the Services at the Company's headquarters office five days per week and may not work remotely.
+
+1.4 Supervision. Contractor shall work under the direct supervision of the Company's Director of Engineering, who may instruct Contractor on the methods and priorities for all tasks.
+
+1.5 Exclusivity. Contractor shall provide services exclusively to Company during the term and shall not provide services to any other client.
+
+1.6 Personal Performance. Contractor shall personally perform the Services and shall not delegate or subcontract any part of the Services to any other person.
+
+1.7 Equipment. Contractor must use the laptop and software provided by the Company and may not use personal equipment for the Services.
+
+1.8 Outside Activities. Contractor shall not advertise or market Contractor's own consulting business or accept engagements from other clients during the term.
+
+COMPENSATION
+
+2.1 Fees. Company shall pay Contractor at the rate of $70.00 per hour for approved hours worked.
+
+2.2 Payment Due. Invoices are payable Net 30 days from receipt of a valid invoice.
+
+2.3 Taxes. Contractor shall be solely responsible for all income taxes and self-employment taxes on amounts paid under this Agreement. Company may withhold from any payment all taxes it determines are required by law.
+
+2.4 Tax Indemnity. Contractor shall indemnify and hold Company harmless from any and all taxes, penalties and interest assessed against Company in connection with payments to Contractor.
+
+2.5 Indirect Taxes. All fees are exclusive of VAT, which Contractor shall invoice where applicable.
+
+DATA AND SECURITY
+
+3.1 Customer Data. In performing the Services Contractor will have access to personal data and customer records of Company's shoppers, and Contractor shall process such personal data only for the purpose of performing the Services.
+
+3.2 Security. Contractor shall implement appropriate security measures, including encryption of personal data at rest.
+
+3.3 Subcontractor Access. Contractor shall not disclose personal data to any third party or subcontractor without Company's prior written consent.
+
+INSURANCE
+
+4.1 Required Coverage. Contractor shall maintain professional liability insurance, commercial general liability insurance and cyber liability insurance throughout the term.
+
+4.2 Limits. Each policy shall have limits of not less than $5,000,000 per claim.
+
+4.3 Additional Insured. Contractor shall name Company as an additional insured under each policy.
+
+4.4 Certificates. Contractor shall provide certificates of insurance before commencing the Services.
+
+4.5 Continuation. Contractor shall maintain such insurance for five years after termination of this Agreement.
+
+TERM AND RENEWAL
+
+5.1 Term. This Agreement begins on March 1, 2026 and continues for an initial term of twelve (12) months.
+
+5.2 Automatic Renewal. This Agreement shall automatically renew for successive renewal terms of twenty-four (24) months each unless Contractor gives written notice of non-renewal at least ninety (90) days before the end of the then-current term.
+
+5.3 Company Option. Company may extend this Agreement at its sole option for any additional period by written notice.
+
+5.4 Renewal Pricing. During any renewal term the rates shall remain the same as the rates in effect during the initial term.
+
+5.5 Termination for Convenience. Company may terminate this Agreement at any time on seven (7) days written notice.
+
+WARRANTIES
+
+6.1 Performance Warranty. Contractor warrants that the deliverables will be error-free and will meet all of Company's requirements.
+
+6.2 Business Outcomes. Contractor guarantees that the platform will increase Company's online revenue by at least twenty percent within six months.
+
+6.3 Warranty Period. The warranties in this Section are perpetual and survive termination of this Agreement.
+
+6.4 Remedies. Contractor shall repair or replace any defective deliverable at no additional charge until Company is satisfied.
+
+OTHER TERMS
+
+7.1 Governing Law. This Agreement shall be governed by the laws of the State of California.
+
+7.2 Independent Contractor. Contractor is an independent contractor and not an employee of Company.

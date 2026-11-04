@@ -4,6 +4,7 @@ import {
 } from '../normalization/types';
 import { DocumentExtractionResult } from '../extraction/types';
 import { compareFoundFacts } from './conflictDetector';
+import { INTELLIGENCE_GROUP_KEYS, INTELLIGENCE_SCHEMA, IntelligenceField } from './intelligenceSchema';
 import {
   AmbiguityOrConflict,
   ContractClassification,
@@ -531,6 +532,18 @@ export function mergeChunkResults(
     entire_agreement: mergeAcrossChunks((r) => r.key_provisions?.entire_agreement, 'Entire Agreement'),
   };
 
+  // 7b. Contractor-intelligence groups: merged field by field with the same conflict handling
+  const intelligence: Record<string, Record<string, FactWithEvidence>> = {};
+  for (const group of INTELLIGENCE_GROUP_KEYS) {
+    intelligence[group] = {};
+    for (const [field, meta] of Object.entries(INTELLIGENCE_SCHEMA[group])) {
+      intelligence[group][field] = mergeAcrossChunks(
+        (r) => (r as any)[group]?.[field],
+        (meta as IntelligenceField).topic
+      );
+    }
+  }
+
   // 8. Ambiguities & Conflicts
   const allAmbiguities: AmbiguityOrConflict[] = [...crossChunkConflicts];
   for (const cr of chunkResults) {
@@ -579,6 +592,7 @@ export function mergeChunkResults(
     payment_and_commercial,
     obligations,
     key_provisions,
+    ...(intelligence as any),
     ambiguities_and_conflicts: allAmbiguities,
     omissions_and_missing_terms: omissions,
     stats: {

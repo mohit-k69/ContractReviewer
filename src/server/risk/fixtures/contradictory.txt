@@ -1,0 +1,73 @@
+INDEPENDENT CONTRACTOR SERVICES AGREEMENT
+
+This Independent Contractor Services Agreement ("Agreement") is made effective as of June 1, 2026, by and between Lumen Analytics LLC, a Delaware limited liability company ("Company"), and Priya Nair, an individual ("Contractor").
+
+SERVICES AND SCOPE
+
+1.1 Services. Contractor shall deliver the reporting dashboard described in Exhibit A. Any change to the scope requires a written change order signed by both parties before the work starts.
+
+1.2 Additional Work. Contractor shall perform such additional services as may be requested by Company from time to time at no extra charge.
+
+1.3 Acceptance. Company shall review each deliverable and has thirty (30) days to accept or reject it. Payment is conditioned on Company's acceptance of the deliverable.
+
+COMPENSATION
+
+2.1 Rate. Company shall pay Contractor at the rate of $85.00 per hour for approved hours.
+
+2.2 Payment Due. Invoices are payable within fifteen (15) days after delivery of the deliverables.
+
+2.3 Taxes. All fees are inclusive of all applicable taxes.
+
+INTELLECTUAL PROPERTY
+
+3.1 Ownership. Contractor hereby assigns to Company all right, title and interest in the work product immediately upon creation.
+
+3.2 Title Transfer. Title to the deliverables shall pass to Company only upon Company's receipt of full payment of all fees.
+
+CONFIDENTIALITY AND LIABILITY
+
+4.1 Confidentiality. Contractor shall keep Company's confidential information secret for a period of three (3) years after termination.
+
+4.2 Survival. The confidentiality obligations of Contractor shall survive termination of this Agreement for a period of five (5) years.
+
+4.3 Limitation of Liability. In no event shall Contractor's aggregate liability under this Agreement exceed the total fees paid to Contractor in the preceding twelve months.
+
+4.4 Indemnification. Contractor shall indemnify Company against all third-party claims, and Contractor's indemnification obligations are not subject to any limitation of liability.
+
+TERM AND TERMINATION
+
+5.1 Term. This Agreement begins on June 1, 2026 and continues for a term of twelve (12) months.
+
+5.2 Expiration. This Agreement shall expire on December 31, 2027 and shall not renew.
+
+5.3 Automatic Renewal. This Agreement shall automatically renew for successive terms of twelve (12) months each unless either party gives notice of non-renewal.
+
+5.4 Termination for Convenience. Either party may terminate this Agreement without cause on thirty (30) days written notice.
+
+5.5 Termination for Cause. If Company terminates this Agreement for breach, Contractor shall not be entitled to any payment for work performed.
+
+5.6 Payment on Termination. Upon any termination Company shall pay Contractor for all services performed through the termination date.
+
+SUBCONTRACTING
+
+6.1 Personal Services. Contractor shall perform the Services personally and shall not subcontract any part of the Services.
+
+6.2 Use of Assistants. Contractor may engage subcontractors and assistants to perform the Services.
+
+WARRANTIES
+
+7.1 Disclaimer. The deliverables are provided AS IS and Contractor disclaims all warranties.
+
+7.2 Performance Warranty. Contractor warrants that the deliverables will be error-free and fit for purpose.
+
+OTHER TERMS
+
+8.1 Governing Law. This Agreement shall be governed by the laws of the State of California.
+
+8.2 Disputes Law. Any dispute arising under this Agreement shall be governed by the laws of the State of New York.
+
+8.3 Effective Date. This Agreement is effective as of September 15, 2026.
+
+8.4 Rate Schedule. Contractor's rate for all work under this Agreement is $95.00 per hour.
+
+8.5 Payment Schedule. Invoices are payable Net 30 days from receipt of a valid invoice.

@@ -1,0 +1,67 @@
+INDEPENDENT CONTRACTOR SERVICES AGREEMENT
+
+This Independent Contractor Services Agreement ("Agreement") is made effective as of April 1, 2026, by and between Brightpath Software Ltd., a Delaware corporation ("Company"), and Maya Chen, an individual ("Contractor").
+
+SERVICES AND SCOPE
+
+1.1 Services. Contractor shall deliver the mobile application described in Exhibit A. Any additional services requested by Company shall be performed only under a written change order signed by both parties and at the rates in this Agreement.
+
+1.2 Acceptance. Company shall review each deliverable within ten (10) business days after delivery. A deliverable not rejected in writing within that period is deemed accepted.
+
+1.3 Independence. Contractor is an independent contractor, controls the manner and means of the Services, sets Contractor's own hours and work location, may provide services to other clients, and may use Contractor's own equipment.
+
+COMPENSATION
+
+2.1 Rate. Company shall pay Contractor at the rate of $90.00 per hour for approved hours worked, and $135.00 per hour for approved overtime hours.
+
+2.2 Payment Due. Invoices are payable Net 30 days from receipt of a valid invoice. Milestone invoices are payable within fifteen (15) days of receipt.
+
+2.3 Late Payment. Overdue amounts accrue interest at 1.0% per month after ten (10) days past the due date.
+
+2.4 Taxes. Contractor is responsible for Contractor's own income taxes. All fees are exclusive of applicable VAT, which Company shall pay in addition when properly invoiced.
+
+INTELLECTUAL PROPERTY
+
+3.1 Ownership. All deliverables created for Company under this Agreement shall be owned by Company upon full payment of the applicable fees. Contractor retains ownership of Contractor's pre-existing tools and materials.
+
+CONFIDENTIALITY, DATA AND LIABILITY
+
+4.1 Confidentiality. Each party shall keep the other party's confidential information secret for three (3) years after termination, and this Section 4.1 shall survive termination for that period.
+
+4.2 Data Protection. Contractor will have access to personal data of Company's users and shall process it only for the purpose of performing the Services. The parties shall sign Company's data processing agreement, under which Contractor acts as processor.
+
+4.3 Security and Breach. Contractor shall maintain appropriate security measures, including encryption, and shall notify Company of any data breach within seventy-two (72) hours of discovery.
+
+4.4 Return of Data. Upon termination Contractor shall return or delete all personal data and certify the deletion in writing.
+
+4.5 Limitation of Liability. Except for Contractor's indemnification obligations for third-party intellectual property infringement claims, each party's aggregate liability shall not exceed the total fees paid under this Agreement.
+
+4.6 Indemnification. Contractor shall indemnify Company against third-party claims that the deliverables infringe intellectual property rights.
+
+INSURANCE
+
+5.1 Professional Liability. Contractor shall maintain professional liability insurance with limits of not less than $1,000,000 per claim during the term.
+
+SUBCONTRACTING
+
+6.1 Subcontractors. Contractor may subcontract portions of the Services with Company's prior written consent, which shall not be unreasonably withheld. Contractor remains responsible for the performance of each subcontractor, and each subcontractor shall be bound by written confidentiality and data protection obligations no less protective than this Agreement.
+
+TERM, RENEWAL AND TERMINATION
+
+7.1 Term. This Agreement begins on April 1, 2026 and continues for an initial term of twelve (12) months, expiring on March 31, 2027.
+
+7.2 Renewal. This Agreement shall automatically renew for successive renewal terms of twelve (12) months each unless either party gives written notice of non-renewal at least thirty (30) days before the end of the then-current term.
+
+7.3 Termination for Convenience. Either party may terminate this Agreement without cause on thirty (30) days written notice.
+
+7.4 Payment on Termination. Upon any termination Company shall pay Contractor for all services performed and expenses incurred through the termination date.
+
+WARRANTIES
+
+8.1 Warranty. Contractor warrants that the deliverables will materially conform to Exhibit A for ninety (90) days after acceptance and shall correct any non-conformity reported within that period.
+
+OTHER TERMS
+
+9.1 Governing Law. This Agreement shall be governed by the laws of the State of Delaware.
+
+9.2 Disputes. Any dispute shall be resolved in the state courts located in Wilmington, Delaware.
