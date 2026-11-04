@@ -26,7 +26,7 @@ export const ContractTypeSelector: React.FC<ContractTypeSelectorProps> = ({
           id="contract-type-select"
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className="w-full appearance-none rounded-md border border-[#E5E7EB] bg-[#FAFAFA] pl-3 pr-8 py-2.5 text-[13px] text-gray-900 transition-colors focus:border-blue-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 cursor-pointer"
+          className="w-full appearance-none rounded-[13px] border border-[#E5E7EB] bg-[#FAFAFA] pl-3 pr-8 py-2.5 text-[13px] text-gray-900 transition-colors focus:border-blue-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 cursor-pointer"
         >
           {options.map((option) => (
             <option key={option.id} value={option.id}>

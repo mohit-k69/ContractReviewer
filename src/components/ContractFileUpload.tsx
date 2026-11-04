@@ -91,10 +91,10 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
 
       {selectedFile ? (
         /* Selected file card */
-        <div className="flex flex-col gap-2 p-3.5 rounded-md border border-[#E5E7EB] bg-[#FAFAFA]">
+        <div className="flex flex-col gap-2 p-3.5 rounded-[16px] border border-[#E5E7EB] bg-[#FAFAFA]">
           <div className="flex items-start justify-between gap-2">
             <div className="flex items-start gap-2.5 overflow-hidden">
-              <div className="p-2 rounded bg-blue-50 text-blue-600 shrink-0 mt-0.5">
+              <div className="p-2 rounded-lg bg-blue-50 text-blue-600 shrink-0 mt-0.5">
                 <FileText className="w-4 h-4" aria-hidden="true" />
               </div>
               <div className="flex flex-col min-w-0">
@@ -111,7 +111,7 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
               onClick={handleRemoveFile}
               title="Remove file"
               aria-label="Remove selected file"
-              className="p-1 text-gray-400 hover:text-gray-600 rounded transition-colors cursor-pointer"
+              className="p-1 text-gray-400 hover:text-gray-600 rounded-md transition-colors cursor-pointer"
             >
               <X className="w-3.5 h-3.5" />
             </button>
@@ -137,7 +137,7 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
           onClick={handleBrowseClick}
-          className={`flex flex-col items-center justify-center text-center p-6 rounded-md border-2 border-dashed transition-all cursor-pointer ${
+          className={`flex flex-col items-center justify-center text-center p-6 rounded-[16px] border-2 border-dashed transition-all cursor-pointer ${
             isDragging
               ? 'border-blue-400 bg-blue-50/40'
               : 'border-[#E5E7EB] bg-[#FAFAFA] hover:bg-white hover:border-gray-300'
@@ -170,7 +170,7 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
               e.stopPropagation();
               handleBrowseClick();
             }}
-            className="mt-3 px-3 py-1.5 rounded-md border border-[#E5E7EB] bg-white text-xs font-medium text-gray-700 hover:bg-gray-50 hover:text-gray-900 transition-colors shadow-none cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-100"
+            className="mt-3 px-3.5 py-1.5 rounded-[13px] border border-[#E5E7EB] bg-white text-xs font-medium text-gray-700 hover:bg-gray-50 hover:text-gray-900 transition-colors shadow-none cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-100"
           >
             Browse files
           </button>
@@ -186,7 +186,7 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
       {errorMessage && (
         <div
           role="alert"
-          className="flex items-start gap-1.5 p-2 rounded-md bg-red-50 border border-red-200 text-red-700 text-xs mt-1"
+          className="flex items-start gap-1.5 p-2.5 rounded-[12px] bg-red-50 border border-red-200 text-red-700 text-xs mt-1"
         >
           <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-red-500" aria-hidden="true" />
           <span className="leading-tight">{errorMessage}</span>

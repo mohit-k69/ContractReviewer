@@ -21,7 +21,7 @@ export const ContractInput: React.FC<ContractInputProps> = ({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full flex-1 min-h-[520px] rounded-md border border-[#E5E7EB] bg-[#FAFAFA] p-3.5 text-sm text-gray-900 placeholder:text-gray-400 transition-colors focus:border-blue-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 resize-y overflow-y-auto leading-relaxed"
+        className="w-full flex-1 min-h-[520px] rounded-[14px] border border-[#E5E7EB] bg-[#FAFAFA] p-3.5 text-sm text-gray-900 placeholder:text-gray-400 transition-colors focus:border-blue-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 resize-y overflow-y-auto leading-relaxed"
       />
     </div>
   );
