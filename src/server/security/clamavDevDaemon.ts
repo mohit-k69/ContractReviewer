@@ -22,7 +22,7 @@ export async function startClamAvDevDaemon(): Promise<{ host: string; port: numb
             payloadStr.includes('EICAR-STANDARD-ANTIVIRUS-TEST-FILE') ||
             payloadStr.includes('This program cannot be run in DOS mode')
           ) {
-            socket.write('stream: Win.Test.EICAR_FOUND\0');
+            socket.write('stream: Win.Test.EICAR FOUND\0');
           } else {
             socket.write('stream: OK\0');
           }

@@ -1,0 +1,39 @@
+INDEPENDENT CONTRACTOR SERVICES AGREEMENT
+
+This Independent Contractor Services Agreement ("Agreement") is made effective as of October 1, 2025, by and between Northwind Digital LLC, a Delaware limited liability company ("Company"), and Jordan Rivera, an individual residing in Austin, Texas ("Contractor").
+
+SERVICES AND SCOPE OF WORK
+
+1.1 Services. Contractor shall provide web development and design services and such additional services as may be requested by Company from time to time, including unlimited revisions until Company is satisfied.
+
+COMPENSATION AND PAYMENT
+
+2.1 Fees. Company shall pay Contractor at the rate of $60.00 per hour for approved hours worked.
+
+2.2 Payment Due. Invoices are payable Net 75 days from receipt of a valid invoice. Payment is conditioned on Company being paid by its own client for the related work.
+
+INTELLECTUAL PROPERTY
+
+3.1 Ownership. Contractor hereby assigns to Company all work product, inventions, and intellectual property created by Contractor, whether or not related to the Services and including any pre-existing tools or materials, immediately upon creation.
+
+CONFIDENTIALITY
+
+4.1 Confidentiality. Contractor shall keep confidential all information disclosed by Company, whether or not marked confidential. These obligations shall continue in perpetuity.
+
+TERMINATION
+
+5.1 Termination for Convenience. Company may terminate this Agreement at any time without notice. Contractor may not terminate this Agreement before completion of the Services.
+
+RESTRICTIVE COVENANTS
+
+6.1 Non-Competition. During the term and for a period of twenty-four (24) months after termination, Contractor shall not directly or indirectly provide services to any competing business anywhere in the United States.
+
+6.2 Exclusivity. Contractor shall provide services exclusively to Company during the term.
+
+LIABILITY AND INDEMNIFICATION
+
+7.1 Indemnification. Contractor shall indemnify and hold harmless Company from any and all claims, losses, damages and legal fees arising out of or in connection with the Services.
+
+DISPUTE RESOLUTION
+
+8.1 Governing Law. This Agreement shall be governed by the laws of the State of New York. Any dispute shall be resolved by binding arbitration in New York, New York.

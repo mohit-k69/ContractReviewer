@@ -1,9 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import os from 'node:os';
 import { FileMetadata, FullSecurityReport } from './types';
 
-export const QUARANTINE_DIR = path.resolve(process.cwd(), '.quarantine');
+// The project directory is read-only on serverless platforms (Vercel), where only the OS temp dir is writable.
+export const QUARANTINE_DIR = process.env.QUARANTINE_DIR
+  ? path.resolve(process.env.QUARANTINE_DIR)
+  : process.env.VERCEL
+  ? path.join(os.tmpdir(), 'fineprint-quarantine')
+  : path.resolve(process.cwd(), '.quarantine');
 export const RETENTION_PERIOD_MS = 2 * 60 * 60 * 1000; // 2 hours
 
 export interface CleanupFailure {

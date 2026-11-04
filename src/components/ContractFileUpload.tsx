@@ -25,6 +25,8 @@ import { FullSecurityReport } from '../server/security/types';
 import { DocumentExtractionResult, ExtractedBlock } from '../server/extraction/types';
 import { NormalizedDocument } from '../server/normalization/types';
 import { ContractUnderstandingResult } from '../server/understanding/types';
+import { ContractRiskReport } from '../server/risk/types';
+import { UploadAnalysis } from '../server/analysisPipeline';
 
 export interface UploadedContractFile {
   file: File;
@@ -39,11 +41,16 @@ export interface UploadedContractFile {
   isNormalizing?: boolean;
   understandingResult?: ContractUnderstandingResult;
   isUnderstanding?: boolean;
+  riskReport?: ContractRiskReport;
+  isGeneratingReport?: boolean;
 }
 
 interface ContractFileUploadProps {
   selectedFile: UploadedContractFile | null;
   onFileSelect: (file: UploadedContractFile | null) => void;
+  /** A file (e.g. pasted contract text turned into a .txt file) to push through the full pipeline automatically. */
+  autoStartFile?: File | null;
+  onAutoStartConsumed?: () => void;
 }
 
 // Ensures a valid server-side HttpOnly session cookie exists
@@ -62,6 +69,8 @@ async function ensureSessionEstablished(): Promise<boolean> {
 export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
   selectedFile,
   onFileSelect,
+  autoStartFile,
+  onAutoStartConsumed,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -73,13 +82,26 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
   const [isNormalizing, setIsNormalizing] = useState(false);
   const [showStructureInspector, setShowStructureInspector] = useState(true);
   const [isUnderstanding, setIsUnderstanding] = useState(false);
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
 
   // Initialize secure session cookie on component mount
   useEffect(() => {
     ensureSessionEstablished();
   }, []);
 
-  const handleFiles = async (files: FileList | null) => {
+  // Pasted contract text arrives as a .txt file and is pushed through the exact same pipeline.
+  const autoStartedRef = useRef<File | null>(null);
+  useEffect(() => {
+    // The ref guard keeps React StrictMode's double-invoked effects from uploading the file twice.
+    if (autoStartFile && autoStartedRef.current !== autoStartFile) {
+      autoStartedRef.current = autoStartFile;
+      onAutoStartConsumed?.();
+      void handleFiles([autoStartFile], true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoStartFile]);
+
+  const handleFiles = async (files: FileList | File[] | null, autoReview = false) => {
     if (!files || files.length === 0) return;
     const file = files[0];
     const validation = validateContractFile(file);
@@ -107,26 +129,55 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
       const formData = new FormData();
       formData.append('file', file);
 
-      // Authenticated purely via HttpOnly cookie (credentials: 'same-origin')
-      const res = await fetch('/api/contracts/upload', {
+      // Authenticated purely via HttpOnly cookie (credentials: 'same-origin').
+      // ?analyze=1 runs inspection AND the full analysis in one request, so the workflow does not depend on
+      // server-side state surviving between requests (serverless hosts may route requests to different instances).
+      const res = await fetch('/api/contracts/upload?analyze=1', {
         method: 'POST',
         credentials: 'same-origin',
         body: formData,
       });
 
-      const report: FullSecurityReport = await res.json();
+      if (res.status === 413) {
+        setIsScanning(false);
+        setErrorMessage(
+          'This file is too large for this deployment to process in one request. Try a smaller file, or paste the contract text.'
+        );
+        onFileSelect({ ...initialFileData, isScanning: false });
+        return;
+      }
+
+      const payload: FullSecurityReport & { analysis?: UploadAnalysis } = await res.json();
+      const { analysis, ...report } = payload;
+      const securityReport = report as FullSecurityReport;
 
       setIsScanning(false);
-      onFileSelect({
+      const scanned: UploadedContractFile = {
         ...initialFileData,
-        securityReport: report,
+        securityReport,
         isScanning: false,
-      });
+      };
 
-      if (!report.eligibleForContractProcessing) {
+      if (!securityReport.eligibleForContractProcessing) {
+        onFileSelect(scanned);
         setErrorMessage(
-          report.statusMessage || `Security inspection decision: ${report.status}`
+          securityReport.statusMessage || `Security inspection decision: ${securityReport.status}`
         );
+      } else if (analysis) {
+        onFileSelect({
+          ...scanned,
+          extractionResult: analysis.extractionResult,
+          normalizedDocument: analysis.normalizedDocument,
+          understandingResult: analysis.understandingResult,
+          riskReport: analysis.riskReport,
+        });
+        if (analysis.error) setErrorMessage(analysis.error);
+      } else {
+        onFileSelect(scanned);
+        // Older/limited backends: fall back to the step-by-step workflow.
+        if (autoReview && securityReport.fileId) {
+          await runReview(securityReport.fileId, scanned);
+        }
       }
     } catch (err: any) {
       setIsScanning(false);
@@ -184,8 +235,33 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
 
   const handleReviewContract = async () => {
     if (!selectedFile?.securityReport?.fileId) return;
-    const fileId = selectedFile.securityReport.fileId;
+    await runReview(selectedFile.securityReport.fileId, selectedFile);
+  };
 
+  // Phase 3: builds the review report from the (cached) understanding. It never repeats extraction,
+  // normalization or the Gemini analysis on the server.
+  const fetchRiskReport = async (fileId: string): Promise<ContractRiskReport | undefined> => {
+    setIsGeneratingReport(true);
+    try {
+      const res = await fetch(`/api/contracts/${fileId}/risk-report`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `Risk report failed with HTTP ${res.status}`);
+      }
+      return (await res.json()) as ContractRiskReport;
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Failed to build the risk report.');
+      return undefined;
+    } finally {
+      setIsGeneratingReport(false);
+    }
+  };
+
+  const runReview = async (fileId: string, base: UploadedContractFile) => {
     setIsExtracting(true);
     setErrorMessage(null);
 
@@ -242,16 +318,23 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
         } finally {
           setIsUnderstanding(false);
         }
+      } else {
+        setIsUnderstanding(false);
       }
 
+      // Phase 3: build the evidence-backed review report from the verified understanding
+      const riskReport = understandingResult ? await fetchRiskReport(fileId) : undefined;
+
       onFileSelect({
-        ...selectedFile,
+        ...base,
         extractionResult,
         isExtracting: false,
         normalizedDocument,
         isNormalizing: false,
         understandingResult,
         isUnderstanding: false,
+        riskReport,
+        isGeneratingReport: false,
       });
     } catch (err: any) {
       setIsExtracting(false);
@@ -312,10 +395,13 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
 
       const understandingResult: ContractUnderstandingResult = await res.json();
       setIsUnderstanding(false);
+      const riskReport = await fetchRiskReport(fileId);
       onFileSelect({
         ...selectedFile,
         understandingResult,
         isUnderstanding: false,
+        riskReport,
+        isGeneratingReport: false,
       });
     } catch (err: any) {
       setIsUnderstanding(false);
@@ -397,7 +483,7 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
             {isScanning && (
               <div className="flex items-center gap-1.5 text-[11px] text-blue-600 font-medium">
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                <span>Running security & malware inspection...</span>
+                <span>Running security & malware inspection, then building your review report...</span>
               </div>
             )}
 
@@ -508,13 +594,21 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
               <button
                 type="button"
                 onClick={handleReviewContract}
-                disabled={isExtracting}
+                disabled={isExtracting || isNormalizing || isUnderstanding || isGeneratingReport}
                 className="w-full h-11 rounded-[14px] bg-blue-600 hover:bg-blue-700 active:bg-blue-800 disabled:bg-blue-400 text-white font-medium text-xs tracking-tight transition-all flex items-center justify-center gap-2 cursor-pointer shadow-sm disabled:cursor-not-allowed"
               >
-                {isExtracting ? (
+                {isExtracting || isNormalizing || isUnderstanding || isGeneratingReport ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin text-white" />
-                    <span>Extracting readable content...</span>
+                    <span>
+                      {isExtracting
+                        ? 'Extracting readable content...'
+                        : isNormalizing
+                        ? 'Structuring clauses...'
+                        : isUnderstanding
+                        ? 'Understanding the contract...'
+                        : 'Building your review report...'}
+                    </span>
                   </>
                 ) : (
                   <>
@@ -525,9 +619,15 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
               </button>
             )}
 
-            {isExtracting && (
-              <div className="text-[11px] text-gray-500 text-center py-1">
-                Verifying cryptographic integrity & extracting structure...
+            {(isExtracting || isNormalizing || isUnderstanding || isGeneratingReport) && (
+              <div className="text-[11px] text-gray-500 text-center py-1" role="status">
+                {isExtracting
+                  ? 'Verifying cryptographic integrity & extracting structure...'
+                  : isNormalizing
+                  ? 'Organizing sections and clauses...'
+                  : isUnderstanding
+                  ? 'Extracting parties, terms and evidence...'
+                  : 'Checking payment, scope, termination, IP, liability, confidentiality, restrictions and disputes...'}
               </div>
             )}
 

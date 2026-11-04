@@ -597,7 +597,7 @@ export function analyzeContractDeterministically(
 
   if (ipElements.length > 0) {
     for (const ipe of ipElements) {
-      if (/work made for hire|exclusive property|assigns all right|client shall own/i.test(ipe.text) && ipOwnership.status === 'NOT_FOUND') {
+      if (/work made for hire|exclusive property|assigns all right|client shall own|hereby assigns?|assigns? to (the )?(company|client|customer)|shall (be|remain) (the )?(sole )?(and exclusive )?property of (the )?(company|client|customer)|owned by (the )?(company|client|customer)/i.test(ipe.text) && ipOwnership.status === 'NOT_FOUND') {
         ipOwnership = {
           status: 'FOUND',
           summary: ipe.text.slice(0, Math.min(ipe.text.length, 120)).trim(),
@@ -646,8 +646,8 @@ export function analyzeContractDeterministically(
       ],
     };
     for (const c of confElements) {
-      if (/survive|years post-termination|\d+\s*years|indefinite/i.test(c.text) && confDuration.status === 'NOT_FOUND') {
-        const durMatch = c.text.match(/(?:survive(?:s)? for [^.;]+|survive(?:s)? [^.;]+|\d+\s*years post-termination|\d+\s*years)/i);
+      if (/survive|years post-termination|\d+\s*years|indefinite|perpetu(al|ity)/i.test(c.text) && confDuration.status === 'NOT_FOUND') {
+        const durMatch = c.text.match(/(?:survive(?:s)? for [^.;]+|survive(?:s)? [^.;]+|\d+\s*years post-termination|\d+\s*years|continue in perpetuity|in perpetuity|perpetual(?:ly)?|indefinite(?:ly)?)/i);
         const quote = durMatch ? durMatch[0].trim() : c.text.slice(0, Math.min(c.text.length, 110)).trim();
         confDuration = {
           status: 'FOUND',

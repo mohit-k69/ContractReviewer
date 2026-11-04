@@ -11,3 +11,4 @@ coverage/
 .aistudio/
 tmp/
 bun.lock
+.vercel/
