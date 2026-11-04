@@ -55,6 +55,7 @@ async function startMockClamAVServer(behavior: 'clean' | 'threat' | 'error' | 't
       let received = Buffer.alloc(0);
 
       socket.on('data', (chunk) => {
+        if (socket.writableEnded) return;
         received = Buffer.concat([received, chunk]);
 
         // Check if stream ended with 0-length chunk

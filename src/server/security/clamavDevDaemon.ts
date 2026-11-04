@@ -10,6 +10,7 @@ export async function startClamAvDevDaemon(): Promise<{ host: string; port: numb
     const server = net.createServer((socket) => {
       let received = Buffer.alloc(0);
       socket.on('data', (chunk) => {
+        if (socket.writableEnded) return;
         received = Buffer.concat([received, chunk]);
         // ClamAV zINSTREAM protocol ends with 4-byte zero length chunk [0, 0, 0, 0]
         if (
