@@ -32,13 +32,21 @@ interface ContractFileUploadProps {
   onFileSelect: (file: UploadedContractFile | null) => void;
 }
 
-function getSessionId(): string {
-  let id = sessionStorage.getItem('contract_reviewer_session_id');
-  if (!id) {
-    id = `sess-${Math.random().toString(36).substring(2, 11)}-${Date.now()}`;
-    sessionStorage.setItem('contract_reviewer_session_id', id);
+async function getOrFetchSessionToken(): Promise<string> {
+  let token = sessionStorage.getItem('fineprint_session_token');
+  if (!token) {
+    try {
+      const res = await fetch('/api/auth/session');
+      const data = await res.json();
+      if (data.sessionToken) {
+        token = data.sessionToken;
+        sessionStorage.setItem('fineprint_session_token', token as string);
+      }
+    } catch {
+      // Handled in caller
+    }
   }
-  return id;
+  return token || '';
 }
 
 export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
@@ -78,11 +86,11 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
       const formData = new FormData();
       formData.append('file', file);
 
-      const sessionId = getSessionId();
+      const sessionToken = await getOrFetchSessionToken();
       const res = await fetch('/api/contracts/upload', {
         method: 'POST',
         headers: {
-          'x-session-id': sessionId,
+          'x-session-token': sessionToken,
         },
         body: formData,
       });
@@ -141,9 +149,10 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
     e.stopPropagation();
     if (selectedFile?.securityReport?.fileId) {
       try {
+        const sessionToken = await getOrFetchSessionToken();
         await fetch(`/api/contracts/${selectedFile.securityReport.fileId}`, {
           method: 'DELETE',
-          headers: { 'x-session-id': getSessionId() },
+          headers: { 'x-session-token': sessionToken },
         });
       } catch {
         // Continue cleanup

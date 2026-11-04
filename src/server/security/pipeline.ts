@@ -20,6 +20,7 @@ export async function runSecurityInspectionPipeline(
     requireExternalScanner?: boolean;
     clamavHost?: string;
     clamavPort?: number;
+    timeoutMs?: number;
   } = {}
 ): Promise<FullSecurityReport> {
   const startTime = Date.now();

@@ -9,6 +9,11 @@ import {
   deleteQuarantinedFile,
   initQuarantineStorage,
 } from './src/server/security/quarantineManager';
+import {
+  requireSessionAuth,
+  createSignedSessionToken,
+  AuthenticatedRequest,
+} from './src/server/security/sessionAuth';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -30,9 +35,21 @@ async function startServer() {
     },
   });
 
-  // 1. Upload & Security Inspection Endpoint
+  // 1. Session Token Issuance Endpoint
+  app.get('/api/auth/session', (_req, res) => {
+    const token = createSignedSessionToken();
+    res.setHeader(
+      'Set-Cookie',
+      `fineprint_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400`
+    );
+    res.json({ sessionToken: token });
+  });
+
+  // 2. Upload & Security Inspection Endpoint
+  // Strictly requires cryptographically verified session token (no default-session fallback)
   app.post(
     '/api/contracts/upload',
+    requireSessionAuth,
     (req, res, next) => {
       upload.single('file')(req, res, (err) => {
         if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
@@ -50,13 +67,13 @@ async function startServer() {
         next();
       });
     },
-    async (req, res) => {
+    async (req: AuthenticatedRequest, res) => {
       try {
         if (!req.file) {
           return res.status(400).json({ error: 'No contract file provided.' });
         }
 
-        const sessionId = (req.headers['x-session-id'] as string) || 'default-session';
+        const sessionId = req.verifiedSession!.sessionId;
         const originalName = req.file.originalname;
         const mimeType = req.file.mimetype;
         const buffer = req.file.buffer;
@@ -79,15 +96,15 @@ async function startServer() {
     }
   );
 
-  // 2. Security Status Retrieval Endpoint
-  app.get('/api/contracts/:id/security-status', (req, res) => {
+  // 3. Security Status Retrieval Endpoint
+  app.get('/api/contracts/:id/security-status', requireSessionAuth, (req: AuthenticatedRequest, res) => {
     const fileId = req.params.id;
-    const sessionId = (req.headers['x-session-id'] as string) || 'default-session';
+    const sessionId = req.verifiedSession!.sessionId;
 
     const { report, authorized } = getSecurityReport(fileId, sessionId);
 
     if (!authorized) {
-      return res.status(403).json({ error: 'Access denied: Unauthorized session.' });
+      return res.status(403).json({ error: 'Access denied: Cross-user session access violation.' });
     }
 
     if (!report) {
@@ -97,22 +114,24 @@ async function startServer() {
     return res.json(report);
   });
 
-  // 3. Secure File Deletion Endpoint
-  app.delete('/api/contracts/:id', (req, res) => {
+  // 4. Quarantined Document Deletion Endpoint
+  app.delete('/api/contracts/:id', requireSessionAuth, (req: AuthenticatedRequest, res) => {
     const fileId = req.params.id;
-    const sessionId = (req.headers['x-session-id'] as string) || 'default-session';
+    const sessionId = req.verifiedSession!.sessionId;
 
-    const { success, authorized } = deleteQuarantinedFile(fileId, sessionId);
+    const result = deleteQuarantinedFile(fileId, sessionId);
 
-    if (!authorized) {
-      return res.status(403).json({ error: 'Access denied: Unauthorized session.' });
+    if (!result.authorized) {
+      return res.status(403).json({ error: 'Access denied: Cross-user session deletion violation.' });
     }
 
-    if (!success) {
-      return res.status(404).json({ error: 'File not found or already deleted.' });
+    if (!result.success) {
+      return res.status(500).json({
+        error: result.error || 'Filesystem deletion failure: could not delete quarantined file.',
+      });
     }
 
-    return res.json({ success: true, message: 'Document securely deleted from quarantine.' });
+    return res.json({ success: true, message: 'Document removed from quarantine.' });
   });
 
   // Vite middleware in dev or static files in production
@@ -130,7 +149,7 @@ async function startServer() {
   }
 
   app.listen(port, '0.0.0.0', () => {
-    console.log(`Contract Reviewer server running on http://0.0.0.0:${port}`);
+    console.log(`FinePrint Contract Reviewer server running on http://0.0.0.0:${port}`);
   });
 }
 

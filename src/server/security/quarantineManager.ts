@@ -12,7 +12,7 @@ export function initQuarantineStorage(): void {
   }
 }
 
-// In-memory registry of reports with access control (session ID enforcement)
+// In-memory registry of quarantined documents with session ownership
 const quarantineRegistry = new Map<string, { metadata: FileMetadata; report: FullSecurityReport }>();
 
 export function storeInQuarantine(
@@ -69,28 +69,43 @@ export function getSecurityReport(
   return { report: record.report, authorized: true };
 }
 
+/**
+ * Deletes a quarantined document.
+ * 
+ * NOTE ON FILESYSTEM DELETION LIMITS:
+ * Standard operating-system unlinking (fs.unlinkSync) removes the filesystem pointer
+ * and frees allocated blocks for reuse. However, on modern flash storage (SSDs with
+ * wear leveling), copy-on-write filesystems (e.g. APFS, Btrfs, ZFS), and cloud block storage,
+ * application-level overwriting does not guarantee physical NAND flash sanitization.
+ * 
+ * If filesystem unlinking fails (e.g., file lock, permissions, or I/O error), this
+ * function fails explicitly and does NOT silently report success.
+ */
 export function deleteQuarantinedFile(
   fileId: string,
   requestingSessionId: string
-): { success: boolean; authorized: boolean } {
+): { success: boolean; authorized: boolean; error?: string } {
   const record = quarantineRegistry.get(fileId);
   if (!record) {
-    return { success: false, authorized: true };
+    return { success: false, authorized: true, error: 'Document not found in quarantine registry.' };
   }
 
   if (record.metadata.sessionId !== requestingSessionId) {
-    return { success: false, authorized: false };
+    return { success: false, authorized: false, error: 'Access denied: Session ownership mismatch.' };
   }
 
   const filePath = path.join(QUARANTINE_DIR, `${fileId}.quarantine`);
+
   if (fs.existsSync(filePath)) {
     try {
-      // Securely wipe file before unlinking
-      const size = fs.statSync(filePath).size;
-      fs.writeFileSync(filePath, Buffer.alloc(Math.min(size, 4096), 0));
       fs.unlinkSync(filePath);
-    } catch {
-      // Continue cleanup
+    } catch (err: any) {
+      // Do not silently report success if the OS failed to unlink the file!
+      return {
+        success: false,
+        authorized: true,
+        error: `Filesystem deletion failed: ${err.message}`,
+      };
     }
   }
 
