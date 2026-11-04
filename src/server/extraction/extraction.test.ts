@@ -99,6 +99,67 @@ function createTestDocx(xmlBody: string): Buffer {
   return zip.toBuffer();
 }
 
+function createMockSecurityReport(
+  fileId: string,
+  metadata: any,
+  status: any = 'CLEAN_NO_KNOWN_THREATS',
+  eligible: boolean = true
+): FullSecurityReport {
+  return {
+    fileId,
+    metadata,
+    status,
+    statusMessage: status === 'CLEAN_NO_KNOWN_THREATS' ? 'Clean' : 'Threat detected',
+    eligibleForContractProcessing: eligible,
+    authenticity: {
+      passed: true,
+      detectedFormat: 'txt',
+      mimeMatch: true,
+      doubleExtensionDetected: false,
+      passwordProtected: false,
+      corrupted: false,
+      details: [],
+    },
+    structure: {
+      passed: true,
+      isZipBomb: false,
+      entryCount: 1,
+      decompressedSize: metadata.fileSize || 100,
+      decompressionRatio: 1,
+      pathTraversalAttempts: [],
+      malformedStructure: false,
+      details: [],
+    },
+    activeContent: {
+      passed: true,
+      hasJavaScript: false,
+      hasAutomaticActions: false,
+      hasLaunchActions: false,
+      hasEmbeddedFiles: false,
+      hasMacros: false,
+      hasOleObjects: false,
+      hasSuspiciousExternalRelationships: false,
+      hasInvalidEncoding: false,
+      details: [],
+    },
+    malware: {
+      passed: status === 'CLEAN_NO_KNOWN_THREATS',
+      engine: 'ClamAV-Daemon',
+      threatsFound: status === 'CLEAN_NO_KNOWN_THREATS' ? [] : ['Win.Test.EICAR'],
+      scannerAvailable: true,
+      details: [],
+    },
+    promptInjection: {
+      passed: true,
+      flaggedPatterns: [],
+      riskLevel: 'NONE',
+      details: [],
+    },
+    completedAt: new Date().toISOString(),
+    scanDurationMs: 15,
+  };
+}
+
 describe('Phase 2A Document Extraction Engine', () => {
   describe('TXT Extraction', () => {
     it('should strip UTF-8 BOM and extract contract sections, paragraphs, and lists', () => {
@@ -251,21 +312,7 @@ describe('Phase 2A Document Extraction Engine', () => {
       const quarantined = storeInQuarantine(doc, 'contract.txt', 'text/plain', sessionId1);
 
       // Create valid security report for sessionId1
-      const report: FullSecurityReport = {
-        fileId: quarantined.fileId,
-        metadata: quarantined.metadata,
-        status: 'CLEAN_NO_KNOWN_THREATS',
-        statusMessage: 'Clean',
-        eligibleForContractProcessing: true,
-        authenticity: { passed: true, detectedMimeType: 'text/plain', detectedFormat: 'txt', details: [] },
-        structure: { passed: true, isZipBomb: false, entryCount: 1, decompressedSize: doc.length, decompressionRatio: 1, pathTraversalAttempts: [], malformedStructure: false, details: [] },
-        activeContent: { passed: true, hasVbaMacros: false, hasJavascript: false, hasAutomaticActions: false, hasOleObjects: false, hasSuspiciousExternalRels: false, details: [] },
-        malware: { passed: true, scannerUsed: 'clamav', threatName: null, details: [] },
-        promptInjection: { passed: true, adversarialPatternsDetected: [], details: [] },
-        inspectedAt: new Date().toISOString(),
-        scanDurationMs: 15,
-      };
-      saveSecurityReport(report);
+      saveSecurityReport(createMockSecurityReport(quarantined.fileId, quarantined.metadata, 'CLEAN_NO_KNOWN_THREATS', true));
 
       // Attempt extraction using sessionId2
       const res = await extractContractDocument(quarantined.fileId, sessionId2);
@@ -278,21 +325,7 @@ describe('Phase 2A Document Extraction Engine', () => {
       const doc = Buffer.from('Malicious payload content.');
       const quarantined = storeInQuarantine(doc, 'infected.pdf', 'application/pdf', sessionId);
 
-      const threatReport: FullSecurityReport = {
-        fileId: quarantined.fileId,
-        metadata: quarantined.metadata,
-        status: 'THREAT_DETECTED',
-        statusMessage: 'Malware found',
-        eligibleForContractProcessing: false,
-        authenticity: { passed: true, detectedMimeType: 'application/pdf', detectedFormat: 'pdf', details: [] },
-        structure: { passed: true, isZipBomb: false, entryCount: 1, decompressedSize: doc.length, decompressionRatio: 1, pathTraversalAttempts: [], malformedStructure: false, details: [] },
-        activeContent: { passed: true, hasVbaMacros: false, hasJavascript: false, hasAutomaticActions: false, hasOleObjects: false, hasSuspiciousExternalRels: false, details: [] },
-        malware: { passed: false, scannerUsed: 'clamav', threatName: 'Win.Test.EICAR', details: [] },
-        promptInjection: { passed: true, adversarialPatternsDetected: [], details: [] },
-        inspectedAt: new Date().toISOString(),
-        scanDurationMs: 20,
-      };
-      saveSecurityReport(threatReport);
+      saveSecurityReport(createMockSecurityReport(quarantined.fileId, quarantined.metadata, 'THREAT_DETECTED', false));
 
       const res = await extractContractDocument(quarantined.fileId, sessionId);
       assert.equal(res.success, false);
@@ -306,24 +339,11 @@ describe('Phase 2A Document Extraction Engine', () => {
       const quarantined = storeInQuarantine(originalDoc, 'tampered.txt', 'text/plain', sessionId);
 
       // Save report with a forged/different SHA-256 hash
-      const report: FullSecurityReport = {
-        fileId: quarantined.fileId,
-        metadata: {
-          ...quarantined.metadata,
-          sha256: '0000000000000000000000000000000000000000000000000000000000000000',
-        },
-        status: 'CLEAN_NO_KNOWN_THREATS',
-        statusMessage: 'Clean',
-        eligibleForContractProcessing: true,
-        authenticity: { passed: true, detectedMimeType: 'text/plain', detectedFormat: 'txt', details: [] },
-        structure: { passed: true, isZipBomb: false, entryCount: 1, decompressedSize: originalDoc.length, decompressionRatio: 1, pathTraversalAttempts: [], malformedStructure: false, details: [] },
-        activeContent: { passed: true, hasVbaMacros: false, hasJavascript: false, hasAutomaticActions: false, hasOleObjects: false, hasSuspiciousExternalRels: false, details: [] },
-        malware: { passed: true, scannerUsed: 'clamav', threatName: null, details: [] },
-        promptInjection: { passed: true, adversarialPatternsDetected: [], details: [] },
-        inspectedAt: new Date().toISOString(),
-        scanDurationMs: 10,
+      const forgedMetadata = {
+        ...quarantined.metadata,
+        sha256: '0000000000000000000000000000000000000000000000000000000000000000',
       };
-      saveSecurityReport(report);
+      saveSecurityReport(createMockSecurityReport(quarantined.fileId, forgedMetadata, 'CLEAN_NO_KNOWN_THREATS', true));
 
       const res = await extractContractDocument(quarantined.fileId, sessionId);
       assert.equal(res.success, false);
@@ -342,21 +362,7 @@ describe('Phase 2A Document Extraction Engine', () => {
       const doc = Buffer.from(contractText, 'utf8');
       const quarantined = storeInQuarantine(doc, 'verified_contract.txt', 'text/plain', sessionId);
 
-      const report: FullSecurityReport = {
-        fileId: quarantined.fileId,
-        metadata: quarantined.metadata,
-        status: 'CLEAN_NO_KNOWN_THREATS',
-        statusMessage: 'Clean',
-        eligibleForContractProcessing: true,
-        authenticity: { passed: true, detectedMimeType: 'text/plain', detectedFormat: 'txt', details: [] },
-        structure: { passed: true, isZipBomb: false, entryCount: 1, decompressedSize: doc.length, decompressionRatio: 1, pathTraversalAttempts: [], malformedStructure: false, details: [] },
-        activeContent: { passed: true, hasVbaMacros: false, hasJavascript: false, hasAutomaticActions: false, hasOleObjects: false, hasSuspiciousExternalRels: false, details: [] },
-        malware: { passed: true, scannerUsed: 'clamav', threatName: null, details: [] },
-        promptInjection: { passed: true, adversarialPatternsDetected: [], details: [] },
-        inspectedAt: new Date().toISOString(),
-        scanDurationMs: 12,
-      };
-      saveSecurityReport(report);
+      saveSecurityReport(createMockSecurityReport(quarantined.fileId, quarantined.metadata, 'CLEAN_NO_KNOWN_THREATS', true));
 
       const res = await extractContractDocument(quarantined.fileId, sessionId);
       assert.equal(res.success, true);
