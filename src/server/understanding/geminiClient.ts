@@ -9,6 +9,8 @@ import {
 } from './promptBuilder';
 import { validateUnderstandingResult } from './evidenceValidator';
 import { analyzeContractDeterministically } from './deterministicAnalyzer';
+import { validateGeminiUnderstandingResponse } from './responseValidator';
+import { chunkNormalizedDocument, mergeChunkResults } from './longDocumentProcessor';
 
 // Configurable model name with gemini-3.8-flash default
 export const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
@@ -57,113 +59,141 @@ function cleanJsonText(rawText: string): string {
 }
 
 /**
+ * Strips provider secrets, authorization headers, or sensitive query params
+ */
+function sanitizeErrorMessage(rawMsg: string): string {
+  return rawMsg
+    .replace(/key=[A-Za-z0-9_-]+/gi, 'key=REDACTED')
+    .replace(/bearer\s+[A-Za-z0-9_.-]+/gi, 'Bearer REDACTED')
+    .replace(/AIza[0-9A-Za-z-_]{35}/g, 'AIzaREDACTED');
+}
+
+/**
  * Core function to run Contract Understanding using Google Gemini.
- * Falls back to deterministic rule-based analysis if GEMINI_API_KEY is not configured.
- * Performs rigorous post-generation evidence verification against the source document.
+ * - Handles long documents via chunking without breaking elements
+ * - Strictly validates Gemini output schema before accepting
+ * - Distinguishes GEMINI vs DETERMINISTIC_FALLBACK analysis sources
+ * - Performs post-generation evidence verification against the source document.
  */
 export async function understandContractWithGemini(
   normalized: NormalizedDocument,
   extraction: DocumentExtractionResult
 ): Promise<ContractUnderstandingResult> {
   const modelName = process.env.GEMINI_CONTRACT_MODEL || DEFAULT_GEMINI_MODEL;
-  const serializedDoc = serializeNormalizedDocument(normalized);
-  const userPrompt = buildUnderstandingPrompt(serializedDoc);
+  const sections = normalized.sections || [];
+  const totalSections = sections.length;
+  const allSectionIds = sections.map((s) => s.id);
 
-  // 1. Check if mock generator is provided (for automated tests)
-  if (customGeneratorMock) {
-    try {
-      const rawText = await customGeneratorMock(
-        userPrompt,
-        UNDERSTANDING_SYSTEM_PROMPT,
-        modelName
-      );
-      const parsed = JSON.parse(cleanJsonText(rawText));
-      const merged: ContractUnderstandingResult = {
-        document_id: normalized.document_id,
-        source_file_id: normalized.source_file_id,
-        verified_sha256: normalized.verified_sha256,
-        model_used: modelName,
-        analyzed_at: new Date().toISOString(),
-        processing_status: 'COMPLETE',
-        warnings: [],
-        ...parsed,
-      };
-      return validateUnderstandingResult(merged, normalized, extraction);
-    } catch (err: any) {
-      console.warn('[GeminiUnderstanding] Custom mock failed, falling back:', err.message);
-    }
-  }
+  // 1. Chunk document if necessary
+  const chunks = chunkNormalizedDocument(normalized);
 
-  // 2. Check if live Gemini API key is configured
+  // 2. Check client availability
   const ai = createGeminiClient();
-  if (!ai) {
-    console.info(
-      `[GeminiUnderstanding] GEMINI_API_KEY not configured in environment. Using deterministic contract understanding engine.`
-    );
-    const baseline = analyzeContractDeterministically(normalized);
-    baseline.warnings.push(
-      'Analysis completed using local deterministic engine (GEMINI_API_KEY not set in environment).'
-    );
-    return validateUnderstandingResult(baseline, normalized, extraction);
-  }
-
-  // 3. Invoke Google Gemini
-  try {
-    const response = await ai.models.generateContent({
-      model: modelName,
-      contents: userPrompt,
-      config: {
-        systemInstruction: UNDERSTANDING_SYSTEM_PROMPT,
-        responseMimeType: 'application/json',
-      },
-    });
-
-    const responseText = response.text;
-    if (!responseText) {
-      throw new Error('Gemini API returned an empty response.');
-    }
-
-    const parsedJson = JSON.parse(cleanJsonText(responseText));
-
-    const result: ContractUnderstandingResult = {
-      document_id: normalized.document_id,
-      source_file_id: normalized.source_file_id,
-      verified_sha256: normalized.verified_sha256,
-      classification: parsedJson.classification || {
-        category: 'General Commercial Agreement',
-        confidence: 0.8,
-        primary_purpose: 'Commercial Agreement',
-        governing_jurisdiction: { status: 'NOT_FOUND', summary: '', evidence: [] },
-      },
-      parties: parsedJson.parties || [],
-      dates_and_term: parsedJson.dates_and_term || ({} as any),
-      scope_and_deliverables: parsedJson.scope_and_deliverables || ({} as any),
-      payment_and_commercial: parsedJson.payment_and_commercial || ({} as any),
-      obligations: parsedJson.obligations || { client_obligations: [], contractor_obligations: [] },
-      key_provisions: parsedJson.key_provisions || ({} as any),
-      ambiguities_and_conflicts: parsedJson.ambiguities_and_conflicts || [],
-      omissions_and_missing_terms: parsedJson.omissions_and_missing_terms || [],
-      stats: {
-        total_facts: 0,
-        verified_facts: 0,
-        verification_percentage: 0,
-        total_evidence_references: 0,
-        verified_evidence_references: 0,
-      },
-      processing_status: 'COMPLETE',
-      model_used: modelName,
-      analyzed_at: new Date().toISOString(),
-      warnings: [],
-    };
-
-    // 4. Validate all evidence references strictly
-    return validateUnderstandingResult(result, normalized, extraction);
-  } catch (err: any) {
-    console.error(`[GeminiUnderstanding] Gemini call failed: ${err.message}. Falling back to deterministic engine.`);
+  if (!ai && !customGeneratorMock) {
     const fallback = analyzeContractDeterministically(normalized);
+    fallback.analysis_source = 'DETERMINISTIC_FALLBACK';
+    fallback.model_used = 'deterministic-fallback-v1';
     fallback.warnings.push(
-      `Gemini API invocation encountered an error (${err.message}). Analysis completed via backup deterministic engine.`
+      'Analysis completed using local deterministic engine (GEMINI_API_KEY not configured).'
     );
     return validateUnderstandingResult(fallback, normalized, extraction);
   }
+
+  // 3. Process each chunk
+  const chunkResults: ContractUnderstandingResult[] = [];
+  let fallbackNeeded = false;
+  let fallbackReason = '';
+
+  for (const chunk of chunks) {
+    const serializedDoc = serializeNormalizedDocument(chunk.docSubset);
+    const userPrompt = buildUnderstandingPrompt(serializedDoc);
+
+    try {
+      let rawText = '';
+      if (customGeneratorMock) {
+        rawText = await customGeneratorMock(
+          userPrompt,
+          UNDERSTANDING_SYSTEM_PROMPT,
+          modelName
+        );
+      } else if (ai) {
+        const response = await ai.models.generateContent({
+          model: modelName,
+          contents: userPrompt,
+          config: {
+            systemInstruction: UNDERSTANDING_SYSTEM_PROMPT,
+            responseMimeType: 'application/json',
+          },
+        });
+        rawText = response.text || '';
+      }
+
+      if (!rawText || !rawText.trim()) {
+        throw new Error('Model returned an empty response.');
+      }
+
+      const parsedJson = JSON.parse(cleanJsonText(rawText));
+
+      // Strict schema validation of response
+      const validationReport = validateGeminiUnderstandingResponse(parsedJson);
+      if (!validationReport.isValid) {
+        throw new Error(
+          `Model output failed schema validation: ${validationReport.errors.slice(0, 3).join('; ')}`
+        );
+      }
+
+      const chunkResult: ContractUnderstandingResult = {
+        document_id: normalized.document_id,
+        source_file_id: normalized.source_file_id,
+        verified_sha256: normalized.verified_sha256,
+        classification: parsedJson.classification,
+        parties: parsedJson.parties || [],
+        dates_and_term: parsedJson.dates_and_term,
+        scope_and_deliverables: parsedJson.scope_and_deliverables,
+        payment_and_commercial: parsedJson.payment_and_commercial,
+        obligations: parsedJson.obligations || { client_obligations: [], contractor_obligations: [] },
+        key_provisions: parsedJson.key_provisions,
+        ambiguities_and_conflicts: parsedJson.ambiguities_and_conflicts || [],
+        omissions_and_missing_terms: parsedJson.omissions_and_missing_terms || [],
+        stats: {
+          total_facts: 0,
+          verified_facts: 0,
+          verification_percentage: 100,
+          total_evidence_references: 0,
+          verified_evidence_references: 0,
+        },
+        processing_status: 'COMPLETE',
+        analysis_source: 'GEMINI',
+        model_used: modelName,
+        analyzed_at: new Date().toISOString(),
+        processed_sections: chunk.sectionIds,
+        total_sections_in_document: totalSections,
+        coverage_percentage: totalSections === 0 ? 100 : Math.round((chunk.sectionIds.length / totalSections) * 100),
+        warnings: [],
+      };
+
+      chunkResults.push(chunkResult);
+    } catch (err: any) {
+      fallbackNeeded = true;
+      fallbackReason = sanitizeErrorMessage(err.message || 'Model execution error');
+      break;
+    }
+  }
+
+  // 4. If any chunk failed or model threw, fallback to deterministic engine
+  if (fallbackNeeded || chunkResults.length === 0) {
+    const fallback = analyzeContractDeterministically(normalized);
+    fallback.analysis_source = 'DETERMINISTIC_FALLBACK';
+    fallback.model_used = 'deterministic-fallback-v1';
+    fallback.warnings.push(
+      `Gemini model execution failed (${fallbackReason}). Analysis completed via deterministic fallback engine.`
+    );
+    return validateUnderstandingResult(fallback, normalized, extraction);
+  }
+
+  // 5. Merge all chunk results deterministically
+  const merged = mergeChunkResults(chunkResults, totalSections, allSectionIds);
+
+  // 6. Post-generation strict evidence verification against original extraction blocks
+  return validateUnderstandingResult(merged, normalized, extraction);
 }

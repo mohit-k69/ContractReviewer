@@ -21,6 +21,7 @@ import {
 
 interface FlattenedElement {
   id: string;
+  source_block_ids: string[];
   source_block_id: string;
   text: string;
   sectionTitle?: string;
@@ -32,11 +33,15 @@ function flattenDocumentElements(doc: NormalizedDocument): FlattenedElement[] {
   function collect(node: any, currentSectionTitle = '') {
     if (!node) return;
     const title = node.title || currentSectionTitle;
-    const blockId = (node.source_block_ids && node.source_block_ids[0]) || '';
+    const blockIds: string[] = Array.isArray(node.source_block_ids) ? node.source_block_ids : [];
+    // If an element groups multiple block IDs (e.g. heading + preamble paragraph),
+    // the substantive text is typically in the last block (the paragraph)
+    const blockId = blockIds.length > 1 ? blockIds[blockIds.length - 1] : (blockIds[0] || '');
 
     if (node.text && node.text.trim()) {
       elements.push({
         id: node.id,
+        source_block_ids: blockIds,
         source_block_id: blockId,
         text: node.text.trim(),
         sectionTitle: title,
@@ -1038,8 +1043,12 @@ export function analyzeContractDeterministically(
       verified_evidence_references: 0,
     },
     processing_status: 'COMPLETE',
+    analysis_source: 'DETERMINISTIC_FALLBACK',
     model_used: 'deterministic-extractor-v1',
     analyzed_at: new Date().toISOString(),
+    processed_sections: (doc.sections || []).map((s) => s.id),
+    total_sections_in_document: (doc.sections || []).length,
+    coverage_percentage: 100,
     warnings: [],
   };
 }

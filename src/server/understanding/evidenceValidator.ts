@@ -12,12 +12,40 @@ import {
   FactWithEvidence,
 } from './types';
 
-function normalizeWhitespace(text: string): string {
-  if (!text) return '';
-  return text
-    .replace(/[\r\n\t]+/g, ' ')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
+/**
+ * Recursively collects all source block IDs associated with a normalized element
+ * and its children/descendants.
+ */
+export function getAllAssociatedBlockIds(element: BaseNormalizedElement): Set<string> {
+  const ids = new Set<string>();
+
+  function collect(node: any) {
+    if (!node) return;
+    if (Array.isArray(node.source_block_ids)) {
+      for (const id of node.source_block_ids) {
+        if (id) ids.add(id);
+      }
+    }
+
+    if (Array.isArray(node.children)) {
+      for (const child of node.children) {
+        collect(child);
+      }
+    }
+    if (Array.isArray(node.content)) {
+      for (const child of node.content) {
+        collect(child);
+      }
+    }
+    if (Array.isArray(node.items)) {
+      for (const item of node.items) {
+        collect(item);
+      }
+    }
+  }
+
+  collect(element);
+  return ids;
 }
 
 /**
@@ -90,10 +118,12 @@ export function buildExtractionBlockMap(
 
 /**
  * Validates a single evidence reference against both the normalized document and the extraction blocks.
- * Checks:
- * 1. Element ID exists in normalized hierarchy.
- * 2. Source block ID exists in extraction blocks.
- * 3. Exact quote is a verbatim substring of the source block's text (with robust whitespace tolerance).
+ * Strict rules:
+ * 1. Element ID must exist in normalized hierarchy.
+ * 2. Source block ID must exist in extraction blocks.
+ * 3. Source block ID MUST be associated with the referenced element (via source_block_ids or descendant tree).
+ * 4. Exact quote MUST be an exact verbatim substring of the original extracted block text.
+ *    Does NOT accept whitespace-normalized, punctuation-normalized, or element-only matches.
  */
 export function validateEvidenceReference(
   ref: EvidenceReference,
@@ -104,64 +134,66 @@ export function validateEvidenceReference(
     return { is_verified: false, error: 'Empty evidence reference.' };
   }
 
-  // 1. Verify Element ID
-  if (!ref.element_id || !elementMap.has(ref.element_id)) {
+  // 1. Verify Element ID exists
+  if (!ref.element_id || typeof ref.element_id !== 'string') {
     return {
       is_verified: false,
-      error: `Referenced element ID "${ref.element_id || 'undefined'}" does not exist in normalized document hierarchy.`,
+      error: 'Missing or invalid element_id.',
+    };
+  }
+
+  if (!elementMap.has(ref.element_id)) {
+    return {
+      is_verified: false,
+      error: `Referenced element ID "${ref.element_id}" does not exist in normalized document hierarchy.`,
     };
   }
 
   const element = elementMap.get(ref.element_id)!;
 
-  // 2. Verify Source Block ID
-  if (!ref.source_block_id || !blockMap.has(ref.source_block_id)) {
+  // 2. Verify Source Block ID exists
+  if (!ref.source_block_id || typeof ref.source_block_id !== 'string') {
     return {
       is_verified: false,
-      error: `Referenced source block ID "${ref.source_block_id || 'undefined'}" does not exist in extraction blocks.`,
+      error: 'Missing or invalid source_block_id.',
+    };
+  }
+
+  if (!blockMap.has(ref.source_block_id)) {
+    return {
+      is_verified: false,
+      error: `Referenced source block ID "${ref.source_block_id}" does not exist in extraction blocks.`,
     };
   }
 
   const block = blockMap.get(ref.source_block_id)!;
 
-  // 3. Verify Exact Quote
-  const quote = ref.exact_quote ? ref.exact_quote.trim() : '';
-  if (!quote) {
+  // 3. Verify that the source block is actually associated with the referenced normalized element
+  const associatedBlocks = getAllAssociatedBlockIds(element);
+  if (!associatedBlocks.has(ref.source_block_id)) {
+    return {
+      is_verified: false,
+      error: `Source block "${ref.source_block_id}" is not associated with normalized element "${ref.element_id}".`,
+    };
+  }
+
+  // 4. Verify Exact Quote (must be exact raw substring of referenced block text)
+  if (typeof ref.exact_quote !== 'string' || ref.exact_quote.length === 0) {
     return {
       is_verified: false,
       error: 'Evidence reference has an empty quote string.',
     };
   }
 
-  // Verbatim raw substring check on block text
-  if (block.text && block.text.includes(quote)) {
-    return { is_verified: true };
+  // Strict exact substring requirement - do NOT accept whitespace or punctuation normalized matches
+  if (!block.text || !block.text.includes(ref.exact_quote)) {
+    return {
+      is_verified: false,
+      error: `Quote text "${ref.exact_quote.slice(0, 60)}${ref.exact_quote.length > 60 ? '...' : ''}" does not appear as a verbatim substring of source block "${ref.source_block_id}".`,
+    };
   }
 
-  // Whitespace-normalized substring check on block text
-  const normQuote = normalizeWhitespace(quote);
-  const normBlockText = normalizeWhitespace(block.text || '');
-  if (normBlockText.includes(normQuote)) {
-    return { is_verified: true };
-  }
-
-  // Substring check on the normalized element's combined text
-  const normElementText = normalizeWhitespace(element.text || '');
-  if (normElementText.includes(normQuote)) {
-    return { is_verified: true };
-  }
-
-  // If quote contains punctuation like smart quotes or hyphens, check normalized ascii
-  const cleanQuote = normQuote.replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"');
-  const cleanBlockText = normBlockText.replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"');
-  if (cleanBlockText.includes(cleanQuote)) {
-    return { is_verified: true };
-  }
-
-  return {
-    is_verified: false,
-    error: `Quote text "${quote.slice(0, 60)}${quote.length > 60 ? '...' : ''}" does not appear as a verbatim substring in source block "${ref.source_block_id}".`,
-  };
+  return { is_verified: true };
 }
 
 /**
@@ -187,16 +219,35 @@ export function validateUnderstandingResult(
     if (!fact) return;
     totalFacts++;
 
+    // NOT_FOUND and NOT_APPLICABLE are verified if they have no evidence references
     if (fact.status === 'NOT_FOUND' || fact.status === 'NOT_APPLICABLE') {
-      // Missing or non-applicable facts have no quotes to verify
-      verifiedFacts++;
+      if (!fact.evidence || fact.evidence.length === 0) {
+        verifiedFacts++;
+      } else {
+        // If it claims NOT_FOUND but provides evidence, validate that evidence
+        let allVerified = true;
+        for (const ref of fact.evidence) {
+          totalEvidenceRefs++;
+          const val = validateEvidenceReference(ref, elementMap, blockMap);
+          ref.is_verified = val.is_verified;
+          ref.verification_error = val.error;
+          if (val.is_verified) {
+            verifiedEvidenceRefs++;
+          } else {
+            allVerified = false;
+            warnings.push(`Evidence verification failed for ${path}: ${val.error}`);
+          }
+        }
+        if (allVerified) {
+          verifiedFacts++;
+        }
+      }
       return;
     }
 
+    // A fact with status FOUND or AMBIGUOUS/CONFLICTING with NO evidence is NEVER verified!
     if (!fact.evidence || fact.evidence.length === 0) {
-      if (fact.status === 'FOUND') {
-        warnings.push(`Fact "${path}" is marked FOUND but provides no evidence references.`);
-      }
+      warnings.push(`Fact "${path}" is marked ${fact.status} but provides no evidence references.`);
       return;
     }
 
@@ -224,11 +275,16 @@ export function validateUnderstandingResult(
   // 1. Classification jurisdiction
   validateFact(result.classification?.governing_jurisdiction, 'classification.governing_jurisdiction');
 
-  // 2. Parties
+  // 2. Parties (counted in total facts and verification statistics)
   if (Array.isArray(result.parties)) {
     for (let i = 0; i < result.parties.length; i++) {
       const p = result.parties[i];
-      if (p.evidence && Array.isArray(p.evidence)) {
+      totalFacts++;
+
+      if (!p.evidence || p.evidence.length === 0) {
+        warnings.push(`Party "${p.name || 'unnamed'}" provides no evidence references.`);
+      } else {
+        let partyAllVerified = true;
         for (const ref of p.evidence) {
           totalEvidenceRefs++;
           const val = validateEvidenceReference(ref, elementMap, blockMap);
@@ -237,8 +293,12 @@ export function validateUnderstandingResult(
           if (val.is_verified) {
             verifiedEvidenceRefs++;
           } else {
+            partyAllVerified = false;
             warnings.push(`Evidence verification failed for party "${p.name}": ${val.error}`);
           }
+        }
+        if (partyAllVerified) {
+          verifiedFacts++;
         }
       }
     }
@@ -329,10 +389,14 @@ export function validateUnderstandingResult(
     validateFact(kp.entire_agreement, 'entire_agreement');
   }
 
-  // 8. Ambiguities & Conflicts evidence
+  // 8. Ambiguities & Conflicts evidence (counted in total facts and verification statistics)
   if (Array.isArray(result.ambiguities_and_conflicts)) {
     for (const item of result.ambiguities_and_conflicts) {
-      if (Array.isArray(item.evidence)) {
+      totalFacts++;
+      if (!item.evidence || item.evidence.length === 0) {
+        warnings.push(`Ambiguity "${item.topic}" provides no evidence references.`);
+      } else {
+        let itemAllVerified = true;
         for (const ref of item.evidence) {
           totalEvidenceRefs++;
           const val = validateEvidenceReference(ref, elementMap, blockMap);
@@ -341,17 +405,25 @@ export function validateUnderstandingResult(
           if (val.is_verified) {
             verifiedEvidenceRefs++;
           } else {
+            itemAllVerified = false;
             warnings.push(`Evidence verification failed for ambiguity "${item.topic}": ${val.error}`);
           }
+        }
+        if (itemAllVerified) {
+          verifiedFacts++;
         }
       }
     }
   }
 
-  const verificationPercentage =
+  const factPercentage =
+    totalFacts === 0 ? 100 : Math.round((verifiedFacts / totalFacts) * 100);
+  const evidencePercentage =
     totalEvidenceRefs === 0
       ? 100
       : Math.round((verifiedEvidenceRefs / totalEvidenceRefs) * 100);
+
+  const verificationPercentage = Math.min(factPercentage, evidencePercentage);
 
   result.stats = {
     total_facts: totalFacts,

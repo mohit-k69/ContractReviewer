@@ -22,7 +22,15 @@ import {
 import {
   ContractUnderstandingResult,
   EvidenceReference,
+  FactWithEvidence,
+  AmbiguityOrConflict,
 } from './types';
+import {
+  chunkNormalizedDocument,
+  mergeChunkResults,
+  mergeFactWithEvidence,
+} from './longDocumentProcessor';
+import { validateGeminiUnderstandingResponse } from './responseValidator';
 import {
   understandContractDocument,
   getCachedUnderstanding,
@@ -798,5 +806,242 @@ test.describe('Phase 2C — AI-Powered Contract Understanding Engine Tests', () 
     const cachedAfter = getCachedUnderstanding(fileId, session);
     assert.equal(cachedAfter.exists, false);
     assert.match(cachedAfter.error!, /Integrity violation/i);
+  });
+
+  test('12. Evidence Verification: Valid quote with valid element and block association passes verification', () => {
+    const { normalized, extraction } = createFreelanceContractFixture();
+    const elementMap = buildNormalizedElementMap(normalized);
+    const blockMap = buildExtractionBlockMap(extraction);
+
+    const validRef: EvidenceReference = {
+      element_id: 'sec-2-clause-1',
+      source_block_id: 'block-6',
+      exact_quote: '$85.00 per hour',
+    };
+
+    const val = validateEvidenceReference(validRef, elementMap, blockMap);
+    assert.equal(val.is_verified, true);
+    assert.equal(val.error, undefined);
+  });
+
+  test('13. Evidence Verification: Valid quote paired with an unrelated existing block fails association check', () => {
+    const { normalized, extraction } = createFreelanceContractFixture();
+    const elementMap = buildNormalizedElementMap(normalized);
+    const blockMap = buildExtractionBlockMap(extraction);
+
+    // block-10 belongs to Section 4 (Confidentiality), but element_id is sec-2-clause-1 (Fees)
+    const mismatchedRef: EvidenceReference = {
+      element_id: 'sec-2-clause-1',
+      source_block_id: 'block-10',
+      exact_quote: 'Section 4. Confidentiality',
+    };
+
+    const val = validateEvidenceReference(mismatchedRef, elementMap, blockMap);
+    assert.equal(val.is_verified, false);
+    assert.match(val.error!, /is not associated with normalized element/i);
+  });
+
+  test('14. Evidence Verification: Quote that only matches after whitespace or punctuation normalization is rejected', () => {
+    const { normalized, extraction } = createFreelanceContractFixture();
+    const elementMap = buildNormalizedElementMap(normalized);
+    const blockMap = buildExtractionBlockMap(extraction);
+
+    // Original text in block-6: "2.1 Fees. Company shall pay Contractor at the rate of $85.00 per hour for approved hours worked."
+    // Whitespace modified: extra space between "rate  of"
+    const whitespaceModifiedRef: EvidenceReference = {
+      element_id: 'sec-2-clause-1',
+      source_block_id: 'block-6',
+      exact_quote: 'rate  of $85.00  per hour',
+    };
+
+    const val = validateEvidenceReference(whitespaceModifiedRef, elementMap, blockMap);
+    assert.equal(val.is_verified, false);
+    assert.match(val.error!, /does not appear as a verbatim substring/i);
+
+    // Punctuation altered:
+    const punctModifiedRef: EvidenceReference = {
+      element_id: 'sec-2-clause-1',
+      source_block_id: 'block-6',
+      exact_quote: '2.1 Fees - Company shall pay Contractor',
+    };
+    const valPunct = validateEvidenceReference(punctModifiedRef, elementMap, blockMap);
+    assert.equal(valPunct.is_verified, false);
+    assert.match(valPunct.error!, /does not appear as a verbatim substring/i);
+  });
+
+  test('15. Evidence Verification: Quote that exists in another element but not the referenced block is rejected', () => {
+    const { normalized, extraction } = createFreelanceContractFixture();
+    const elementMap = buildNormalizedElementMap(normalized);
+    const blockMap = buildExtractionBlockMap(extraction);
+
+    // Quote from block-13 ("terminate this Agreement without cause") referenced against block-6 (Fees)
+    const wrongBlockRef: EvidenceReference = {
+      element_id: 'sec-2-clause-1',
+      source_block_id: 'block-6',
+      exact_quote: 'terminate this Agreement without cause',
+    };
+
+    const val = validateEvidenceReference(wrongBlockRef, elementMap, blockMap);
+    assert.equal(val.is_verified, false);
+    assert.match(val.error!, /does not appear as a verbatim substring/i);
+  });
+
+  test('16. Evidence Verification: Missing element_id or missing source_block_id is rejected', () => {
+    const { normalized, extraction } = createFreelanceContractFixture();
+    const elementMap = buildNormalizedElementMap(normalized);
+    const blockMap = buildExtractionBlockMap(extraction);
+
+    const missingElementRef: EvidenceReference = {
+      element_id: '',
+      source_block_id: 'block-6',
+      exact_quote: '$85.00 per hour',
+    };
+    const val1 = validateEvidenceReference(missingElementRef, elementMap, blockMap);
+    assert.equal(val1.is_verified, false);
+    assert.match(val1.error!, /Missing or invalid element_id/i);
+
+    const missingBlockRef: EvidenceReference = {
+      element_id: 'sec-2-clause-1',
+      source_block_id: '',
+      exact_quote: '$85.00 per hour',
+    };
+    const val2 = validateEvidenceReference(missingBlockRef, elementMap, blockMap);
+    assert.equal(val2.is_verified, false);
+    assert.match(val2.error!, /Missing or invalid source_block_id/i);
+  });
+
+  test('17. Evidence Verification: A FOUND fact with no evidence is NOT counted as verified', () => {
+    const { normalized, extraction } = createFreelanceContractFixture();
+    const baseline = analyzeContractDeterministically(normalized);
+
+    // Intentionally strip evidence from a FOUND fact
+    baseline.dates_and_term.effective_date = {
+      status: 'FOUND',
+      summary: 'October 1, 2025',
+      evidence: [], // Zero evidence references
+    };
+
+    const validated = validateUnderstandingResult(baseline, normalized, extraction);
+    // Effective date has no evidence, so verified_facts must be strictly less than total_facts
+    assert.ok(validated.stats.verified_facts < validated.stats.total_facts);
+    assert.ok(validated.stats.verification_percentage < 100);
+    assert.ok(
+      validated.warnings.some((w) => w.includes('provides no evidence references'))
+    );
+  });
+
+  test('18. Long Document Chunker: Splits into bounded chunks without breaking sections or clauses', () => {
+    const { normalized } = createFreelanceContractFixture();
+    // With maxChunkChars = 400, our 7-section document will be split into multiple chunks
+    const chunks = chunkNormalizedDocument(normalized, 400);
+
+    assert.ok(chunks.length > 1, 'Should split into multiple chunks');
+    assert.equal(chunks[0].totalChunks, chunks.length);
+
+    // All section IDs across chunks should match the original document sections
+    const allChunkSectionIds = chunks.flatMap((c) => c.sectionIds);
+    const originalSectionIds = normalized.sections.map((s) => s.id);
+    assert.deepEqual(allChunkSectionIds, originalSectionIds);
+
+    // Preamble blocks should be in first chunk
+    assert.ok(chunks[0].docSubset.unclassified_blocks.length > 0);
+  });
+
+  test('19. Long Document Chunker: Detects cross-chunk contradictions and provisions in later chunks', () => {
+    const conflicts: AmbiguityOrConflict[] = [];
+
+    // Case A: FOUND in later chunk overrides NOT_FOUND in earlier chunk
+    const earlierNotFound: FactWithEvidence = {
+      status: 'NOT_FOUND',
+      summary: 'No provision found in agreement.',
+      evidence: [],
+    };
+    const laterFound: FactWithEvidence = {
+      status: 'FOUND',
+      summary: 'Either party may terminate upon 30 days notice.',
+      evidence: [
+        {
+          element_id: 'sec-5-clause-1',
+          source_block_id: 'block-13',
+          exact_quote: 'thirty (30) days prior written notice',
+        },
+      ],
+    };
+
+    const mergedFound = mergeFactWithEvidence(
+      earlierNotFound,
+      laterFound,
+      'Termination for Convenience',
+      true,
+      conflicts
+    );
+    assert.equal(mergedFound.status, 'FOUND');
+    assert.equal(mergedFound.evidence.length, 1);
+
+    // Case B: Direct contradiction between two FOUND facts in different chunks
+    const conflictingFact1: FactWithEvidence = {
+      status: 'FOUND',
+      summary: 'Governing law is State of New York courts exclusively.',
+      evidence: [
+        {
+          element_id: 'sec-1-clause-1',
+          source_block_id: 'block-2',
+          exact_quote: 'State of New York',
+        },
+      ],
+    };
+    const conflictingFact2: FactWithEvidence = {
+      status: 'FOUND',
+      summary: 'Governing law is State of California courts exclusively.',
+      evidence: [
+        {
+          element_id: 'sec-7-clause-1',
+          source_block_id: 'block-19',
+          exact_quote: 'State of California',
+        },
+      ],
+    };
+
+    const mergedConflict = mergeFactWithEvidence(
+      conflictingFact1,
+      conflictingFact2,
+      'Governing Jurisdiction',
+      true,
+      conflicts
+    );
+    assert.equal(mergedConflict.status, 'CONFLICTING');
+    assert.equal(mergedConflict.evidence.length, 2);
+    assert.ok(conflicts.length > 0);
+    assert.equal(conflicts[0].topic, 'Governing Jurisdiction');
+  });
+
+  test('20. Strict Schema Validation: Malformed Gemini JSON triggers deterministic fallback with explicit source', async () => {
+    const { normalized, extraction } = createFreelanceContractFixture();
+
+    // Mock generator returns incomplete / malformed JSON (missing classification and key provisions)
+    setGeminiGeneratorMock(async () => {
+      return JSON.stringify({
+        invalid_structure: true,
+        parties: [{ name: '' }], // Empty party name violates schema
+      });
+    });
+
+    try {
+      const result = await understandContractWithGemini(normalized, extraction);
+
+      // Must have triggered deterministic fallback
+      assert.equal(result.analysis_source, 'DETERMINISTIC_FALLBACK');
+      assert.equal(result.model_used, 'deterministic-fallback-v1');
+      assert.ok(result.warnings.length > 0);
+      assert.ok(
+        result.warnings.some((w) =>
+          w.includes('Deterministic') || w.includes('failed') || w.includes('fallback')
+        )
+      );
+      // Fallback result still passes 100% evidence verification
+      assert.equal(result.stats.verification_percentage, 100);
+    } finally {
+      setGeminiGeneratorMock(null);
+    }
   });
 });

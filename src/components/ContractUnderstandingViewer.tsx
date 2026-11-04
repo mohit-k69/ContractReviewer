@@ -53,13 +53,53 @@ export const ContractUnderstandingViewer: React.FC<ContractUnderstandingViewerPr
 
   return (
     <div className="flex flex-col gap-3 w-full text-left">
+      {/* Partial Coverage Warning Banner */}
+      {result.processing_status === 'PARTIAL' && (
+        <div className="p-3 rounded-xl border border-amber-300 bg-amber-50 flex items-start gap-2.5 text-xs text-amber-900 shadow-xs">
+          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+          <div className="flex flex-col gap-0.5">
+            <span className="font-semibold">Partial Document Coverage ({result.coverage_percentage || 0}%)</span>
+            <span>
+              Only {result.processed_sections?.length || 0} of {result.total_sections_in_document || 0} sections were analyzed.
+              Unprocessed sections may contain crucial terms or exceptions. Omissions cannot be confirmed without complete coverage.
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Deterministic Fallback Notice Banner */}
+      {result.analysis_source === 'DETERMINISTIC_FALLBACK' && (
+        <div className="p-3 rounded-xl border border-blue-200 bg-blue-50/70 flex items-start gap-2.5 text-xs text-blue-900 shadow-xs">
+          <Info className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+          <div className="flex flex-col gap-0.5">
+            <span className="font-semibold">Deterministic Baseline Engine (Fallback Mode)</span>
+            <span>
+              Analysis was performed using the deterministic rule engine because Gemini processing was unavailable or encountered a schema mismatch.
+              Factual extraction and evidence references remain strictly verified against source blocks.
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Header card with classification and stats */}
       <div className="p-4 rounded-xl border border-gray-200 bg-white shadow-xs">
         <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-gray-100">
           <div className="flex flex-col">
             <div className="flex items-center gap-2">
-              <span className="text-[11px] font-semibold tracking-wide uppercase text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded">
-                Phase 2C • Contract Understanding
+              <span
+                className={`text-[11px] font-semibold tracking-wide uppercase px-2 py-0.5 rounded ${
+                  result.processing_status === 'PARTIAL'
+                    ? 'text-amber-800 bg-amber-100'
+                    : result.analysis_source === 'DETERMINISTIC_FALLBACK'
+                    ? 'text-blue-800 bg-blue-100'
+                    : 'text-indigo-700 bg-indigo-50'
+                }`}
+              >
+                {result.processing_status === 'PARTIAL'
+                  ? 'Partial Analysis'
+                  : result.analysis_source === 'DETERMINISTIC_FALLBACK'
+                  ? 'Deterministic Baseline'
+                  : 'AI-Analyzed • Complete'}
               </span>
               <span className="text-[11px] text-gray-500 font-mono">
                 {result.model_used}
@@ -532,12 +572,12 @@ export const ContractUnderstandingViewer: React.FC<ContractUnderstandingViewerPr
             {/* Verification State */}
             <div
               className={`p-2.5 rounded-lg flex items-center gap-2 text-xs font-medium border ${
-                inspectedEvidence.evidence.is_verified
+                inspectedEvidence.evidence.is_verified === true
                   ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
                   : 'bg-rose-50 text-rose-800 border-rose-200'
               }`}
             >
-              {inspectedEvidence.evidence.is_verified ? (
+              {inspectedEvidence.evidence.is_verified === true ? (
                 <>
                   <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
                   <span>Verified Substring in Original Extracted Document</span>
@@ -548,7 +588,7 @@ export const ContractUnderstandingViewer: React.FC<ContractUnderstandingViewerPr
                   <span>
                     Unverified Quote:{' '}
                     {inspectedEvidence.evidence.verification_error ||
-                      'Could not confirm substring'}
+                      'Could not confirm substring in referenced block'}
                   </span>
                 </>
               )}
@@ -664,18 +704,24 @@ interface EvidenceBadgeProps {
 }
 
 const EvidenceBadge: React.FC<EvidenceBadgeProps> = ({ reference, onClick }) => {
-  const isVerified = reference.is_verified !== false;
+  const isVerified = reference.is_verified === true;
   return (
     <button
       onClick={onClick}
-      title={`Element: ${reference.element_id} | Block: ${reference.source_block_id}`}
+      title={`Element: ${reference.element_id} | Block: ${reference.source_block_id}${
+        !isVerified ? ` (Unverified: ${reference.verification_error || 'Quote verification failed'})` : ' (Verified)'
+      }`}
       className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono border transition-all cursor-pointer ${
         isVerified
           ? 'bg-emerald-50/60 text-emerald-700 border-emerald-200 hover:bg-emerald-100/70'
           : 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100'
       }`}
     >
-      <CheckCircle2 className="w-2.5 h-2.5 shrink-0" />
+      {isVerified ? (
+        <CheckCircle2 className="w-2.5 h-2.5 shrink-0 text-emerald-600" />
+      ) : (
+        <AlertTriangle className="w-2.5 h-2.5 shrink-0 text-rose-600" />
+      )}
       <span>{reference.element_id || 'Ref'}</span>
       <ExternalLink className="w-2.5 h-2.5 opacity-60" />
     </button>

@@ -141,6 +141,8 @@ export interface UnderstandingStats {
   verified_evidence_references: number;
 }
 
+export type AnalysisSource = 'GEMINI' | 'DETERMINISTIC_FALLBACK';
+
 export interface ContractUnderstandingResult {
   document_id: string;
   source_file_id: string;
@@ -156,8 +158,12 @@ export interface ContractUnderstandingResult {
   omissions_and_missing_terms: OmissionOrMissingTerm[];
   stats: UnderstandingStats;
   processing_status: 'COMPLETE' | 'PARTIAL' | 'FAILED';
+  analysis_source: AnalysisSource;
   model_used: string;
   analyzed_at: string;
+  processed_sections?: string[];
+  total_sections_in_document?: number;
+  coverage_percentage?: number;
   warnings: string[];
   error?: string;
 }
