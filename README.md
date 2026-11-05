@@ -7,11 +7,17 @@ and what to clarify before signing.
 ## How it works
 
 ```
-paste / upload ─► security inspection ─► extraction ─► normalization ─► contract understanding ─► review report
-                  (Phase 1: AV, format,   (Phase 2A)    (Phase 2B)        (Phase 2C: Gemini or       (Phase 3: rules)
-                   injection checks)                                       built-in fallback,
+paste / upload ─► security inspection ─► extraction ─► normalization ─► contract understanding ─► risk analysis ─► Decision Report
+                  (basic checks)          (Phase 2A)    (Phase 2B)        (Phase 2C: Gemini or       (Phase 3: rules)  (five sections)
+                                                                           built-in fallback,
                                                                            word-for-word evidence)
 ```
+
+**What the user sees.** One upload request runs everything in the background (the security checks are not shown) while
+the screen says "Reviewing your contract". The result is the **Contract Decision Report** (`analysis.decisionReport`,
+rendered by `src/components/DecisionReportView.tsx`) in five sections: *Understand Your Deal*, *Your Commitments*,
+*What Deserves Your Attention?*, *What If Something Happens?* and *Your Rights and Next Steps*. Exact contract quotations
+and their section references are one click away; there is no numerical score. A rejected file gets one short message.
 
 * **Phase 3 – review report** (`src/server/risk/`): a deterministic, explainable rule engine turns the verified
   understanding into findings across payment, scope, termination, IP, liability & indemnification, confidentiality,

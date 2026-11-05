@@ -1,49 +1,25 @@
 import React, { useRef, useState, useEffect } from 'react';
-import {
-  UploadCloud,
-  FileText,
-  X,
-  AlertCircle,
-  ShieldCheck,
-  ShieldAlert,
-  Loader2,
-  ChevronDown,
-  ChevronUp,
-  CheckCircle2,
-  Layers,
-  AlertTriangle,
-  Table,
-  Sparkles,
-} from 'lucide-react';
+import { UploadCloud, FileText, X, AlertCircle, Loader2 } from 'lucide-react';
 import {
   ALLOWED_EXTENSIONS,
   formatFileSize,
   MAX_FILE_SIZE_MB,
   validateContractFile,
 } from '../utils/fileValidation';
-import { FullSecurityReport } from '../server/security/types';
-import { DocumentExtractionResult, ExtractedBlock } from '../server/extraction/types';
-import { NormalizedDocument } from '../server/normalization/types';
-import { ContractUnderstandingResult } from '../server/understanding/types';
-import { ContractRiskReport } from '../server/risk/types';
-import { UploadAnalysis } from '../server/analysisPipeline';
-import { parseUploadResponse, verdictOf } from '../utils/securityVerdict';
+import type { FullSecurityReport } from '../server/security/types';
+import type { DecisionReport } from '../server/decision/types';
+import { interpretUploadResponse, MESSAGES } from '../utils/uploadOutcome';
 
 export interface UploadedContractFile {
   file: File;
   name: string;
   size: number;
   type: string;
-  securityReport?: FullSecurityReport;
   isScanning?: boolean;
-  extractionResult?: DocumentExtractionResult;
-  isExtracting?: boolean;
-  normalizedDocument?: NormalizedDocument;
-  isNormalizing?: boolean;
-  understandingResult?: ContractUnderstandingResult;
-  isUnderstanding?: boolean;
-  riskReport?: ContractRiskReport;
-  isGeneratingReport?: boolean;
+  /** The Contract Decision Report returned by the single upload request. It is the only result the UI keeps. */
+  decisionReport?: DecisionReport;
+  /** Kept only so callers can tell that the file was rejected; never displayed. */
+  securityReport?: FullSecurityReport;
 }
 
 interface ContractFileUploadProps {
@@ -57,10 +33,7 @@ interface ContractFileUploadProps {
 // Ensures a valid server-side HttpOnly session cookie exists
 async function ensureSessionEstablished(): Promise<boolean> {
   try {
-    const res = await fetch('/api/auth/session', {
-      method: 'GET',
-      credentials: 'same-origin',
-    });
+    const res = await fetch('/api/auth/session', { method: 'GET', credentials: 'same-origin' });
     return res.ok;
   } catch {
     return false;
@@ -76,78 +49,52 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [isScanning, setIsScanning] = useState(false);
-  const [showSecurityDetails, setShowSecurityDetails] = useState(false);
-  const [isExtracting, setIsExtracting] = useState(false);
-  const [showExtractionBlocks, setShowExtractionBlocks] = useState(false);
-  const [isNormalizing, setIsNormalizing] = useState(false);
-  const [showStructureInspector, setShowStructureInspector] = useState(true);
-  const [isUnderstanding, setIsUnderstanding] = useState(false);
-  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+  const [isReviewing, setIsReviewing] = useState(false);
 
   // Initialize secure session cookie on component mount
   useEffect(() => {
-    ensureSessionEstablished();
+    void ensureSessionEstablished();
   }, []);
 
-  // Pasted contract text arrives as a .txt file and is pushed through the exact same pipeline.
+  // Pasted contract text arrives as a .txt file and goes through exactly the same request.
   const autoStartedRef = useRef<File | null>(null);
   useEffect(() => {
     // The ref guard keeps React StrictMode's double-invoked effects from uploading the file twice.
     if (autoStartFile && autoStartedRef.current !== autoStartFile) {
       autoStartedRef.current = autoStartFile;
       onAutoStartConsumed?.();
-      void handleFiles([autoStartFile], true);
+      void handleFiles([autoStartFile]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoStartFile]);
 
-  const handleFiles = async (files: FileList | File[] | null, autoReview = false) => {
+  const handleFiles = async (files: FileList | File[] | null) => {
     if (!files || files.length === 0) return;
     const file = files[0];
     const validation = validateContractFile(file);
-
     if (!validation.valid) {
-      setErrorMessage(validation.error || 'Invalid file.');
+      setErrorMessage(validation.error || MESSAGES.generic);
       return;
     }
 
     setErrorMessage(null);
-    setIsScanning(true);
-
-    const initialFileData: UploadedContractFile = {
+    setIsReviewing(true);
+    const base: UploadedContractFile = {
       file,
       name: file.name,
       size: file.size,
       type: file.type || file.name.split('.').pop()?.toUpperCase() || 'FILE',
       isScanning: true,
     };
-    onFileSelect(initialFileData);
+    onFileSelect(base);
 
     try {
       await ensureSessionEstablished();
-
       const formData = new FormData();
       formData.append('file', file);
 
-      // Authenticated purely via HttpOnly cookie (credentials: 'same-origin').
-      // ?analyze=1 runs inspection AND the full analysis in one request, so the workflow does not depend on
-      // server-side state surviving between requests (serverless hosts may route requests to different instances).
-      const res = await fetch('/api/contracts/upload?analyze=1', {
-        method: 'POST',
-        credentials: 'same-origin',
-        body: formData,
-      });
-
-      if (res.status === 413) {
-        setIsScanning(false);
-        setErrorMessage(
-          'This file is too large for this deployment to process in one request. Try a smaller file, or paste the contract text.'
-        );
-        onFileSelect({ ...initialFileData, isScanning: false });
-        return;
-      }
-
+      // ONE request: the server checks the file, analyses it, returns the report and deletes the file again.
+      const res = await fetch('/api/contracts/upload?analyze=1', { method: 'POST', credentials: 'same-origin', body: formData });
       let body: unknown = null;
       try {
         body = await res.json();
@@ -155,50 +102,19 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
         body = null; // not JSON (for example a platform error page)
       }
 
-      // The response is validated before anything is shown or used. A body that is not a well-formed security
-      // report becomes an explicit error; an unscanned file is never treated as clean.
-      const { report: securityReport, verdict } = parseUploadResponse(res.status, body);
-      const analysis = securityReport ? (body as { analysis?: UploadAnalysis }).analysis : undefined;
-
-      setIsScanning(false);
-
-      if (!securityReport) {
-        onFileSelect({ ...initialFileData, isScanning: false });
-        setErrorMessage(`${verdict.title}. ${verdict.message}`);
-        return;
-      }
-
-      const scanned: UploadedContractFile = {
-        ...initialFileData,
-        securityReport,
-        isScanning: false,
-      };
-
-      if (!verdict.processable || !securityReport.eligibleForContractProcessing) {
-        // Blocked, failed or unavailable: nothing is extracted or analysed.
-        onFileSelect(scanned);
-        setErrorMessage(`${verdict.title}. ${verdict.message}`);
-      } else if (analysis) {
-        onFileSelect({
-          ...scanned,
-          extractionResult: analysis.extractionResult,
-          normalizedDocument: analysis.normalizedDocument,
-          understandingResult: analysis.understandingResult,
-          riskReport: analysis.riskReport,
-        });
-        if (analysis.error) setErrorMessage(analysis.error);
+      const outcome = interpretUploadResponse(res.status, body);
+      if (outcome.ok) {
+        onFileSelect({ ...base, isScanning: false, decisionReport: outcome.report });
       } else {
-        // The document passed inspection but the server returned no analysis (and keeps no copy to retry).
-        onFileSelect(scanned);
-        setErrorMessage('The server did not return an analysis for this document, and it has been deleted. Please upload it again.');
+        // Rejected or failed: one short message, and nothing from the checks is shown.
+        onFileSelect({ ...base, isScanning: false });
+        setErrorMessage(outcome.message);
       }
-    } catch (err: any) {
-      setIsScanning(false);
-      setErrorMessage('Security inspection service unreachable (Fail-Closed).');
-      onFileSelect({
-        ...initialFileData,
-        isScanning: false,
-      });
+    } catch {
+      onFileSelect({ ...base, isScanning: false });
+      setErrorMessage(MESSAGES.unreachable);
+    } finally {
+      setIsReviewing(false);
     }
   };
 
@@ -207,779 +123,96 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
     e.stopPropagation();
     setIsDragging(true);
   };
-
   const handleDragLeave = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setIsDragging(false);
   };
-
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setIsDragging(false);
-    handleFiles(e.dataTransfer.files);
+    void handleFiles(e.dataTransfer.files);
   };
-
   const handleBrowseClick = () => {
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
       fileInputRef.current.click();
     }
   };
-
-  const handleRemoveFile = async (e: React.MouseEvent) => {
+  const handleRemoveFile = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (selectedFile?.securityReport?.fileId) {
-      try {
-        await fetch(`/api/contracts/${selectedFile.securityReport.fileId}`, {
-          method: 'DELETE',
-          credentials: 'same-origin',
-        });
-      } catch {
-        // Continue cleanup
-      }
-    }
     setErrorMessage(null);
-    setShowSecurityDetails(false);
-    setShowExtractionBlocks(false);
     onFileSelect(null);
   };
 
-  const handleReviewContract = async () => {
-    if (!selectedFile?.securityReport?.fileId) return;
-    await runReview(selectedFile.securityReport.fileId, selectedFile);
-  };
-
-  // Documents are processed in ONE request (?analyze=1) and deleted from the server immediately afterwards, so
-  // there is nothing left to extract, normalize or analyse step by step.
-  const STEP_BY_STEP_UNAVAILABLE =
-    'This document was processed in a single step and deleted from the server immediately afterwards, so it cannot be processed again. Please upload it again.';
-  const runReview = async (_fileId: string, _base: UploadedContractFile) => {
-    setErrorMessage(STEP_BY_STEP_UNAVAILABLE);
-  };
-  const handleNormalizeContract = async () => {
-    setErrorMessage(STEP_BY_STEP_UNAVAILABLE);
-  };
-  const handleUnderstandContract = async () => {
-    setErrorMessage(STEP_BY_STEP_UNAVAILABLE);
-  };
-
-  const report = selectedFile?.securityReport;
-  const verdict = report ? verdictOf(report) : null;
-  // Only a genuine antivirus pass shows as "clean". Basic checks without antivirus are shown separately, as a caution.
-  const isClean = verdict?.kind === 'clean';
-  const isDemo = verdict?.kind === 'basic';
-  const hasThreat = !!verdict && !verdict.processable;
-  const canProcess = !!verdict?.processable;
-
   return (
-    <div className="flex flex-col gap-2 w-full">
+    <div className="flex flex-col gap-3 w-full">
       <input
         ref={fileInputRef}
         type="file"
         accept={ALLOWED_EXTENSIONS.join(',')}
-        onChange={(e) => handleFiles(e.target.files)}
+        onChange={(e) => void handleFiles(e.target.files)}
         className="hidden"
         aria-label="Upload contract file"
       />
 
-      {selectedFile ? (
-        <div className="flex flex-col gap-2 w-full">
-          {/* Selected file card */}
-          <div className="flex flex-col gap-2.5 p-3.5 rounded-[16px] border border-[#E5E7EB] bg-[#FAFAFA] transition-all">
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex items-start gap-2.5 overflow-hidden">
-              <div
-                className={`p-2 rounded-lg shrink-0 mt-0.5 ${
-                  isScanning
-                    ? 'bg-blue-50 text-blue-600 animate-pulse'
-                    : isClean
-                    ? 'bg-emerald-50 text-emerald-600'
-                    : isDemo || verdict?.kind === 'unavailable'
-                    ? 'bg-amber-50 text-amber-600'
-                    : hasThreat
-                    ? 'bg-rose-50 text-rose-600'
-                    : 'bg-blue-50 text-blue-600'
-                }`}
-              >
-                {isScanning ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : isClean ? (
-                  <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                ) : isDemo || verdict?.kind === 'unavailable' ? (
-                  <AlertTriangle className="w-4 h-4 text-amber-600" />
-                ) : hasThreat ? (
-                  <ShieldAlert className="w-4 h-4 text-rose-600" />
-                ) : (
-                  <FileText className="w-4 h-4" aria-hidden="true" />
-                )}
-              </div>
-              <div className="flex flex-col min-w-0">
-                <span
-                  className="text-xs font-medium text-gray-900 truncate"
-                  title={selectedFile.name}
-                >
-                  {selectedFile.name}
-                </span>
-                <span className="text-[11px] text-gray-500 mt-0.5">
-                  {formatFileSize(selectedFile.size)}
-                </span>
-              </div>
+      {isReviewing ? (
+        <div role="status" aria-live="polite" className="flex items-center gap-3 rounded-[16px] border border-[#E5E7EB] bg-[#FAFAFA] p-4">
+          <Loader2 className="w-5 h-5 text-blue-600 animate-spin shrink-0" aria-hidden="true" />
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-gray-900">Reviewing your contract</p>
+            {selectedFile && <p className="text-xs text-gray-500 truncate" title={selectedFile.name}>{selectedFile.name}</p>}
+          </div>
+        </div>
+      ) : selectedFile?.decisionReport ? (
+        <div className="flex items-center justify-between gap-3 rounded-[16px] border border-[#E5E7EB] bg-[#FAFAFA] p-3.5">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <FileText className="w-4 h-4 text-gray-500 shrink-0" aria-hidden="true" />
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-gray-900 truncate" title={selectedFile.name}>{selectedFile.name}</p>
+              <p className="text-xs text-gray-500">{formatFileSize(selectedFile.size)}</p>
             </div>
-            <button
-              type="button"
-              onClick={handleRemoveFile}
-              title="Remove file"
-              aria-label="Remove selected file"
-              className="p-1 text-gray-400 hover:text-gray-600 rounded-md transition-colors cursor-pointer"
-            >
-              <X className="w-3.5 h-3.5" />
+          </div>
+          <div className="flex items-center gap-3 shrink-0">
+            <button type="button" onClick={handleBrowseClick} className="text-xs text-blue-700 hover:text-blue-800 hover:underline cursor-pointer">
+              Review another
+            </button>
+            <button type="button" onClick={handleRemoveFile} title="Clear" aria-label="Clear the review" className="p-1 text-gray-400 hover:text-gray-600 rounded-md cursor-pointer">
+              <X className="w-4 h-4" />
             </button>
           </div>
-
-          {/* Security Inspection Status */}
-          <div className="pt-2 border-t border-gray-200/60 flex flex-col gap-1.5">
-            {isScanning && (
-              <div className="flex items-center gap-1.5 text-[11px] text-blue-600 font-medium">
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                <span>Running security & malware inspection, then building your review report...</span>
-              </div>
-            )}
-
-            {!isScanning && isClean && (
-              <div className="flex flex-col gap-1">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] text-emerald-700 font-medium flex items-center gap-1">
-                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                    {verdict?.title}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setShowSecurityDetails(!showSecurityDetails)}
-                    className="text-[10px] text-gray-500 hover:text-gray-700 flex items-center gap-0.5 cursor-pointer"
-                  >
-                    <span>Inspection details</span>
-                    {showSecurityDetails ? (
-                      <ChevronUp className="w-3 h-3" />
-                    ) : (
-                      <ChevronDown className="w-3 h-3" />
-                    )}
-                  </button>
-                </div>
-                <span className="text-[10px] text-gray-400">
-                  Verified in {report?.scanDurationMs}ms • SHA-256: {report?.metadata.sha256.substring(0, 10)}...
-                </span>
-              </div>
-            )}
-
-            {!isScanning && isDemo && (
-              <div className="flex flex-col gap-1">
-                <span className="text-[11px] text-amber-700 font-semibold flex items-center gap-1">
-                  <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
-                  {verdict?.title}
-                </span>
-                <span className="text-[10px] text-amber-700 leading-tight">{verdict?.message}</span>
-              </div>
-            )}
-
-            {!isScanning && hasThreat && (
-              <div className="flex flex-col gap-1">
-                <div className="flex items-center justify-between">
-                  <span
-                    className={`text-[11px] font-semibold flex items-center gap-1 ${
-                      verdict?.kind === 'unavailable' ? 'text-amber-700' : 'text-rose-700'
-                    }`}
-                    role="alert"
-                  >
-                    <ShieldAlert className={`w-3.5 h-3.5 ${verdict?.kind === 'unavailable' ? 'text-amber-600' : 'text-rose-600'}`} />
-                    {verdict?.title}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setShowSecurityDetails(!showSecurityDetails)}
-                    className="text-[10px] text-gray-500 hover:text-gray-700 flex items-center gap-0.5 cursor-pointer"
-                  >
-                    <span>View audit</span>
-                    {showSecurityDetails ? (
-                      <ChevronUp className="w-3 h-3" />
-                    ) : (
-                      <ChevronDown className="w-3 h-3" />
-                    )}
-                  </button>
-                </div>
-                <span className={`text-[10px] leading-tight ${verdict?.kind === 'unavailable' ? 'text-amber-700' : 'text-rose-600'}`}>
-                  {verdict?.message}
-                </span>
-              </div>
-            )}
-
-            {/* Expandable audit breakdown */}
-            {showSecurityDetails && report && (
-              <div className="mt-1 p-2.5 rounded-[12px] bg-white border border-[#E5E7EB] text-[10px] flex flex-col gap-1.5 text-gray-600">
-                <div className="flex items-center justify-between">
-                  <span>Authenticity & Signature:</span>
-                  <span className={report.authenticity.passed ? 'text-emerald-600 font-medium' : 'text-rose-600 font-semibold'}>
-                    {report.authenticity.passed ? 'Verified' : 'Failed'}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span>Structure & Zip Bomb:</span>
-                  <span className={report.structure.passed ? 'text-emerald-600 font-medium' : 'text-rose-600 font-semibold'}>
-                    {report.structure.passed ? 'Safe' : 'Failed'}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span>Active Content / Macros:</span>
-                  <span className={report.activeContent.passed ? 'text-emerald-600 font-medium' : 'text-rose-600 font-semibold'}>
-                    {report.activeContent.passed ? 'None Detected' : 'Blocked'}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span>Malware Scanner:</span>
-                  <span
-                    className={
-                      verdict?.kind === 'clean'
-                        ? 'text-emerald-600 font-medium'
-                        : verdict?.kind === 'basic' || verdict?.kind === 'unavailable'
-                        ? 'text-amber-600 font-semibold'
-                        : 'text-rose-600 font-semibold'
-                    }
-                  >
-                    {report.malware.outcome === 'unavailable'
-                      ? 'Unavailable (not scanned)'
-                      : report.malware.outcome === 'error'
-                      ? 'Scan failed (not cleared)'
-                      : report.malware.outcome === 'threat' || !report.malware.passed
-                      ? 'Threat Found'
-                      : report.malware.genuine === true
-                      ? `Clean (${report.malware.engine})`
-                      : 'Not performed — basic checks only'}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span>Prompt Injection Defense:</span>
-                  <span className={report.promptInjection.passed ? 'text-emerald-600 font-medium' : 'text-amber-600 font-semibold'}>
-                    {report.promptInjection.passed ? 'Nothing flagged' : 'Flagged (advisory, not blocked)'}
-                  </span>
-                </div>
-              </div>
-            )}
-
-            <div className="flex items-center justify-end pt-1">
-              <button
-                type="button"
-                onClick={handleBrowseClick}
-                className="text-[11px] text-blue-600 hover:text-blue-700 hover:underline cursor-pointer"
-              >
-                Replace file
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Phase 2A Review Trigger & Extraction Result */}
-        {canProcess && report?.eligibleForContractProcessing && (
-          <div className="flex flex-col gap-2 mt-1">
-            {!selectedFile.extractionResult && (
-              <button
-                type="button"
-                onClick={handleReviewContract}
-                disabled={isExtracting || isNormalizing || isUnderstanding || isGeneratingReport}
-                className="w-full h-11 rounded-[14px] bg-blue-600 hover:bg-blue-700 active:bg-blue-800 disabled:bg-blue-400 text-white font-medium text-xs tracking-tight transition-all flex items-center justify-center gap-2 cursor-pointer shadow-sm disabled:cursor-not-allowed"
-              >
-                {isExtracting || isNormalizing || isUnderstanding || isGeneratingReport ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin text-white" />
-                    <span>
-                      {isExtracting
-                        ? 'Extracting readable content...'
-                        : isNormalizing
-                        ? 'Structuring clauses...'
-                        : isUnderstanding
-                        ? 'Understanding the contract...'
-                        : 'Building your review report...'}
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <FileText className="w-4 h-4 text-white" />
-                    <span>Review Contract</span>
-                  </>
-                )}
-              </button>
-            )}
-
-            {(isExtracting || isNormalizing || isUnderstanding || isGeneratingReport) && (
-              <div className="text-[11px] text-gray-500 text-center py-1" role="status">
-                {isExtracting
-                  ? 'Verifying cryptographic integrity & extracting structure...'
-                  : isNormalizing
-                  ? 'Organizing sections and clauses...'
-                  : isUnderstanding
-                  ? 'Extracting parties, terms and evidence...'
-                  : 'Checking payment, scope, termination, IP, liability, confidentiality, restrictions and disputes...'}
-              </div>
-            )}
-
-            {selectedFile.extractionResult && (
-              <div className="flex flex-col gap-2 p-3.5 rounded-[16px] border border-[#E5E7EB] bg-[#FAFAFA]">
-                {/* Status Header */}
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    {selectedFile.extractionResult.extraction_status === 'COMPLETED' ? (
-                      <div className="p-1.5 rounded-lg bg-emerald-50 text-emerald-600 shrink-0">
-                        <CheckCircle2 className="w-4 h-4" />
-                      </div>
-                    ) : selectedFile.extractionResult.extraction_status === 'OCR_REQUIRED' ||
-                      selectedFile.extractionResult.extraction_status === 'PARTIAL' ? (
-                      <div className="p-1.5 rounded-lg bg-amber-50 text-amber-600 shrink-0">
-                        <AlertTriangle className="w-4 h-4" />
-                      </div>
-                    ) : (
-                      <div className="p-1.5 rounded-lg bg-rose-50 text-rose-600 shrink-0">
-                        <AlertCircle className="w-4 h-4" />
-                      </div>
-                    )}
-
-                    <div className="flex flex-col min-w-0">
-                      <span className="text-xs font-semibold text-gray-900">
-                        {selectedFile.extractionResult.extraction_status === 'COMPLETED'
-                          ? 'Extraction Complete'
-                          : selectedFile.extractionResult.extraction_status === 'OCR_REQUIRED'
-                          ? 'OCR Required'
-                          : selectedFile.extractionResult.extraction_status === 'PARTIAL'
-                          ? 'Partial Extraction'
-                          : 'Extraction Failed'}
-                      </span>
-                      <span className="text-[10px] text-gray-500">
-                        {selectedFile.extractionResult.total_blocks} blocks •{' '}
-                        {selectedFile.extractionResult.extraction_duration_ms}ms
-                      </span>
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setShowExtractionBlocks(!showExtractionBlocks)}
-                    className="text-[11px] text-blue-600 hover:text-blue-700 flex items-center gap-0.5 cursor-pointer font-medium"
-                  >
-                    <span>{showExtractionBlocks ? 'Hide' : 'View'}</span>
-                    {showExtractionBlocks ? (
-                      <ChevronUp className="w-3.5 h-3.5" />
-                    ) : (
-                      <ChevronDown className="w-3.5 h-3.5" />
-                    )}
-                  </button>
-                </div>
-
-                {/* Status Notice */}
-                {selectedFile.extractionResult.extraction_status === 'OCR_REQUIRED' && (
-                  <div className="p-2.5 rounded-[12px] bg-amber-50/70 border border-amber-200 text-amber-800 text-[11px] leading-relaxed">
-                    This document appears to be scanned or image-based. Optical Character Recognition (OCR) is required to read text content.
-                  </div>
-                )}
-
-                {selectedFile.extractionResult.warnings.length > 0 && (
-                  <div className="flex flex-col gap-1 text-[10px] text-amber-700 bg-amber-50/50 p-2 rounded-[10px] border border-amber-100">
-                    {selectedFile.extractionResult.warnings.map((w, idx) => (
-                      <span key={idx} className="leading-tight">• {w}</span>
-                    ))}
-                  </div>
-                )}
-
-                {/* Expandable Document Structure Blocks */}
-                {showExtractionBlocks && (
-                  <div className="flex flex-col gap-2 mt-1 max-h-[360px] overflow-y-auto pr-0.5">
-                    {selectedFile.extractionResult.blocks.length === 0 ? (
-                      <div className="text-[11px] text-gray-400 text-center py-4">
-                        No structural blocks to display.
-                      </div>
-                    ) : (
-                      selectedFile.extractionResult.blocks.map((block) => (
-                        <div
-                          key={block.block_id}
-                          className="p-2.5 rounded-[12px] bg-white border border-[#E5E7EB] text-left text-xs flex flex-col gap-1"
-                        >
-                          <div className="flex items-center justify-between text-[9px] text-gray-400 font-mono">
-                            <span className="uppercase tracking-wider font-semibold text-gray-500">
-                              {block.type} {block.metadata?.heading_level ? `H${block.metadata.heading_level}` : ''}
-                            </span>
-                            <span>{block.structural_ref || block.block_id}</span>
-                          </div>
-
-                          {block.type === 'heading' ? (
-                            <div className="font-semibold text-gray-900 text-xs border-l-2 border-blue-500 pl-2">
-                              {block.text}
-                            </div>
-                          ) : block.type === 'list' ? (
-                            <div className="text-[11px] text-gray-800 pl-2 leading-relaxed">
-                              • {block.text.replace(/^[-*•]\s+/, '')}
-                            </div>
-                          ) : block.type === 'table' && block.table_data ? (
-                            <div className="overflow-x-auto my-1 border border-gray-100 rounded">
-                              <table className="min-w-full text-[10px] divide-y divide-gray-200">
-                                <tbody className="divide-y divide-gray-100">
-                                  {block.table_data.map((row, rIdx) => (
-                                    <tr key={rIdx} className={rIdx === 0 ? 'bg-gray-50 font-medium' : ''}>
-                                      {row.map((cell, cIdx) => (
-                                        <td key={cIdx} className="px-2 py-1 text-gray-700 whitespace-nowrap">
-                                          {cell}
-                                        </td>
-                                      ))}
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          ) : (
-                            <div className="text-[11px] text-gray-700 leading-relaxed">
-                              {block.text}
-                            </div>
-                          )}
-                        </div>
-                      ))
-                    )}
-                  </div>
-                )}
-
-                <div className="flex items-center justify-between pt-1 border-t border-gray-200/60 text-[10px] text-gray-400">
-                  <span>SHA-256 Verified Match</span>
-                  <span>Deleted from the server after analysis</span>
-                </div>
-              </div>
-            )}
-
-            {/* Phase 2B Document Structure Inspector */}
-            {selectedFile.normalizedDocument && (
-              <div className="flex flex-col gap-2 p-3.5 rounded-[16px] border border-[#E5E7EB] bg-[#FAFAFA] mt-1">
-                {/* Header */}
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <div className="p-1.5 rounded-lg bg-indigo-50 text-indigo-600 shrink-0">
-                      <Layers className="w-4 h-4" />
-                    </div>
-                    <div className="flex flex-col min-w-0">
-                      <span className="text-xs font-semibold text-gray-900">
-                        Document Structure Inspector
-                      </span>
-                      <span className="text-[10px] text-gray-500">
-                        {selectedFile.normalizedDocument.total_sections} sections •{' '}
-                        {selectedFile.normalizedDocument.total_clauses} clauses •{' '}
-                        {selectedFile.normalizedDocument.total_paragraphs} paragraphs
-                        {selectedFile.normalizedDocument.total_tables > 0
-                          ? ` • ${selectedFile.normalizedDocument.total_tables} tables`
-                          : ''}
-                      </span>
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setShowStructureInspector(!showStructureInspector)}
-                    className="text-[11px] text-blue-600 hover:text-blue-700 flex items-center gap-0.5 cursor-pointer font-medium"
-                    aria-label="Toggle document structure inspector"
-                  >
-                    <span>{showStructureInspector ? 'Hide' : 'Inspect'}</span>
-                    {showStructureInspector ? (
-                      <ChevronUp className="w-3.5 h-3.5" />
-                    ) : (
-                      <ChevronDown className="w-3.5 h-3.5" />
-                    )}
-                  </button>
-                </div>
-
-                {/* Normalized hierarchy display */}
-                {showStructureInspector && (
-                  <div className="flex flex-col gap-2 mt-1 max-h-[420px] overflow-y-auto pr-0.5 text-xs">
-                    {/* Unclassified / Preamble blocks */}
-                    {selectedFile.normalizedDocument.unclassified_blocks.length > 0 && (
-                      <div className="p-2.5 rounded-[12px] bg-amber-50/50 border border-amber-200/60 flex flex-col gap-1.5">
-                        <div className="flex items-center justify-between text-[9px] font-mono text-amber-700 font-semibold uppercase tracking-wider">
-                          <span>Preamble / Document Elements ({selectedFile.normalizedDocument.unclassified_blocks.length})</span>
-                        </div>
-                        {selectedFile.normalizedDocument.unclassified_blocks.map((block) => (
-                          <NormalizedNodeRenderer key={block.id} node={block} />
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Sections and recursive hierarchy */}
-                    {selectedFile.normalizedDocument.sections.map((section) => (
-                      <NormalizedNodeRenderer key={section.id} node={section} />
-                    ))}
-                  </div>
-                )}
-
-                {/* Normalized status footer */}
-                <div className="flex items-center justify-between pt-1 border-t border-gray-200/60 text-[10px] text-gray-400">
-                  <span>Normalized: {selectedFile.normalizedDocument.normalization_status}</span>
-                  <button
-                    type="button"
-                    onClick={handleNormalizeContract}
-                    disabled={isNormalizing}
-                    className="text-blue-600 hover:text-blue-700 hover:underline cursor-pointer"
-                  >
-                    {isNormalizing ? 'Normalizing...' : 'Re-normalize'}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Phase 2C Understanding Status / Action Card */}
-            {selectedFile.normalizedDocument && (
-              selectedFile.understandingResult ? (
-                <div className="flex flex-col gap-2 p-3.5 rounded-[16px] border border-indigo-100 bg-indigo-50/40 mt-1">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <div className="p-1.5 rounded-lg bg-indigo-600 text-white shrink-0">
-                        <Sparkles className="w-4 h-4" />
-                      </div>
-                      <div className="flex flex-col min-w-0 text-left">
-                        <span className="text-xs font-semibold text-gray-900 truncate">
-                          {selectedFile.understandingResult.classification?.category || 'Contract Understanding'}
-                        </span>
-                        <span className="text-[10px] text-indigo-700 font-medium">
-                          {selectedFile.understandingResult.stats.verification_percentage}% Verbatim Evidence Match
-                        </span>
-                      </div>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={handleUnderstandContract}
-                      disabled={isUnderstanding}
-                      className="text-[11px] text-indigo-600 hover:text-indigo-800 font-medium cursor-pointer"
-                    >
-                      {isUnderstanding ? 'Analyzing...' : 'Re-analyze'}
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="mt-1">
-                  <button
-                    type="button"
-                    onClick={handleUnderstandContract}
-                    disabled={isUnderstanding}
-                    className="w-full h-11 rounded-[14px] bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 disabled:bg-indigo-400 text-white font-medium text-xs tracking-tight transition-all flex items-center justify-center gap-2 cursor-pointer shadow-sm disabled:cursor-not-allowed"
-                  >
-                    {isUnderstanding ? (
-                      <>
-                        <Loader2 className="w-4 h-4 animate-spin text-white" />
-                        <span>Understanding contract with Gemini...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="w-4 h-4 text-white" />
-                        <span>Understand Contract (Gemini AI)</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              )
-            )}
-          </div>
-        )}
         </div>
       ) : (
-        /* Dropzone / Upload area */
         <div
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          onClick={handleBrowseClick}
-          className={`flex flex-col items-center justify-center text-center p-6 rounded-[16px] border-2 border-dashed transition-all cursor-pointer ${
-            isDragging
-              ? 'border-blue-400 bg-blue-50/40'
-              : 'border-[#E5E7EB] bg-[#FAFAFA] hover:bg-white hover:border-gray-300'
-          }`}
           role="button"
           tabIndex={0}
-          aria-label="Upload contract drag and drop area"
+          onClick={handleBrowseClick}
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault();
               handleBrowseClick();
             }
           }}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className={`flex flex-col items-center justify-center gap-2 rounded-[16px] border-2 border-dashed px-4 py-8 text-center cursor-pointer transition-colors ${
+            isDragging ? 'border-blue-400 bg-blue-50' : 'border-[#D1D5DB] bg-[#FAFAFA] hover:border-blue-300 hover:bg-white'
+          }`}
         >
-          <div className="p-2.5 rounded-full bg-gray-100 text-gray-500 mb-2">
-            <UploadCloud className="w-5 h-5 text-gray-600" aria-hidden="true" />
-          </div>
-
-          <span className="text-xs font-semibold text-gray-900">
-            Upload your contract
-          </span>
-
-          <span className="text-[11px] text-gray-500 mt-1 max-w-[240px] leading-relaxed">
-            Drag and drop your file here, or browse your device.
-          </span>
-
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              handleBrowseClick();
-            }}
-            className="mt-3 px-3.5 py-1.5 rounded-[13px] border border-[#E5E7EB] bg-white text-xs font-medium text-gray-700 hover:bg-gray-50 hover:text-gray-900 transition-colors shadow-none cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-100"
-          >
-            Browse files
-          </button>
-
-          <div className="flex flex-col items-center gap-0.5 mt-3 pt-3 border-t border-gray-200/60 w-full text-[10px] text-gray-400">
-            <span>Supported: PDF (.pdf), Word (.docx), Plain text (.txt)</span>
-            <span>Maximum size: {MAX_FILE_SIZE_MB} MB</span>
-          </div>
+          <UploadCloud className="w-7 h-7 text-gray-400" aria-hidden="true" />
+          <p className="text-sm font-medium text-gray-900">Drop your contract here, or click to choose a file</p>
+          <p className="text-xs text-gray-500">PDF, DOCX or TXT · up to {MAX_FILE_SIZE_MB} MB</p>
         </div>
       )}
 
-      {/* Error message */}
       {errorMessage && (
-        <div
-          role="alert"
-          className="flex items-start gap-1.5 p-2.5 rounded-[12px] bg-red-50 border border-red-200 text-red-700 text-xs mt-1"
-        >
-          <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-red-500" aria-hidden="true" />
-          <span className="leading-tight">{errorMessage}</span>
+        <div role="alert" className="flex items-start gap-2 rounded-[12px] border border-red-200 bg-red-50 px-3.5 py-3 text-sm text-red-800">
+          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" aria-hidden="true" />
+          <span>{errorMessage}</span>
         </div>
       )}
     </div>
   );
 };
-
-interface NormalizedNodeRendererProps {
-  node: any;
-  depth?: number;
-}
-
-function NormalizedNodeRenderer({ node, depth = 0 }: NormalizedNodeRendererProps) {
-  if (!node) return null;
-
-  if (node.type === 'section' || node.type === 'subsection') {
-    const isSubsection = node.type === 'subsection';
-    return (
-      <div
-        key={node.id}
-        className={`p-2.5 rounded-[12px] ${
-          isSubsection
-            ? 'bg-slate-50/60 border border-slate-200/80 ml-2 mt-1'
-            : 'bg-white border border-[#E5E7EB] mt-1'
-        } flex flex-col gap-2 text-left`}
-      >
-        <div className="flex items-center justify-between">
-          <span className="font-semibold text-xs text-gray-900 flex items-center gap-1.5">
-            {node.section_number && (
-              <span
-                className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-medium ${
-                  isSubsection ? 'bg-indigo-50 text-indigo-700' : 'bg-blue-50 text-blue-700'
-                }`}
-              >
-                {node.section_number}
-              </span>
-            )}
-            <span>{node.title || node.text}</span>
-          </span>
-          <span className="text-[9px] text-gray-400 font-mono">{node.id}</span>
-        </div>
-
-        {node.children && node.children.length > 0 && (
-          <div className="flex flex-col gap-1.5 pl-2 border-l-2 border-gray-200/60">
-            {node.children.map((child: any) => (
-              <NormalizedNodeRenderer key={child.id} node={child} depth={depth + 1} />
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  if (node.type === 'clause' || node.type === 'subclause') {
-    const isSubclause = node.type === 'subclause';
-    return (
-      <div
-        key={node.id}
-        className={`p-2 rounded-[8px] ${
-          isSubclause
-            ? 'bg-white/90 border border-indigo-200/60 ml-2 shadow-xs'
-            : 'bg-gray-50/80 border border-gray-200/60'
-        } flex flex-col gap-1 text-left`}
-      >
-        <div className="flex items-center justify-between text-[10px]">
-          <span className="font-medium text-gray-900 flex items-center gap-1">
-            {node.clause_number && (
-              <span
-                className={`font-mono font-semibold ${
-                  isSubclause ? 'text-purple-700' : 'text-indigo-700'
-                }`}
-              >
-                {node.clause_number}
-              </span>
-            )}
-            {node.title && <span>{node.title}</span>}
-          </span>
-          <span className="text-[9px] text-gray-400 font-mono">{node.id}</span>
-        </div>
-
-        {/* Clause text (rendered once, no visual duplication) */}
-        <div className="text-[11px] text-gray-700 leading-relaxed">{node.text}</div>
-
-        {/* Recursively render nested subclauses, paragraphs, tables, or lists */}
-        {node.content && node.content.length > 0 && (
-          <div className="flex flex-col gap-1 pl-2 border-l-2 border-indigo-100/70 mt-1">
-            {node.content.map((child: any) => (
-              <NormalizedNodeRenderer key={child.id} node={child} depth={depth + 1} />
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  if (node.type === 'table') {
-    return (
-      <div
-        key={node.id}
-        className="overflow-x-auto my-1 border border-gray-200 rounded-[8px] bg-white p-1 text-left"
-      >
-        <div className="text-[9px] text-gray-400 font-mono px-1 pb-1">
-          {node.id} • Table ({node.row_count} rows, {node.col_count} cols)
-        </div>
-        <table className="min-w-full text-[10px] divide-y divide-gray-200">
-          <tbody className="divide-y divide-gray-100">
-            {node.table_data?.map((row: string[], rIdx: number) => (
-              <tr key={rIdx} className={rIdx === 0 ? 'bg-gray-50 font-medium' : ''}>
-                {row.map((cell: string, cIdx: number) => (
-                  <td key={cIdx} className="px-2 py-1 text-gray-700 whitespace-nowrap">
-                    {cell}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    );
-  }
-
-  if (node.type === 'list') {
-    return (
-      <div
-        key={node.id}
-        className="p-2 rounded-[8px] bg-gray-50/50 border border-gray-100 flex flex-col gap-1 text-left"
-      >
-        <div className="text-[9px] text-gray-400 font-mono">{node.id} • List</div>
-        {node.items?.map((item: any) => (
-          <div key={item.id} className="text-[11px] text-gray-700 pl-1">
-            • {item.text.replace(/^[-*•]\s+/, '')}
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  return (
-    <div key={node.id} className="text-[11px] text-gray-700 py-0.5 text-left">
-      {node.text}
-    </div>
-  );
-}
