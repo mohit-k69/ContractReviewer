@@ -1,0 +1,84 @@
+# PREVIEW / TESTING: low-cost Cloud Run service that scales to zero when idle.
+#
+# Same containers, same ClamAV, same memory and the same fail-closed behaviour as production. What differs:
+#   * minScale 0   : no instance runs while nobody is testing, so nothing is billed.
+#   * request-based billing (CPU throttled between requests): the signature updater cannot run in the background,
+#     so an instance's signatures are as fresh as its start (freshclam runs at start). See README "Trade-offs".
+#   * a cold start (new instance + signature load) is slow. Until ClamAV is ready the service answers 503
+#     "unavailable"; the application then reports "Security scanning is unavailable" and analyses nothing. It never
+#     reports a file as clean because ClamAV is still starting.
+#
+# Use a SEPARATE secret and service from production (contract-scanner-token-preview / contract-scanner-preview).
+# Placeholders: __PROJECT_ID__  __REGION__  __API_TAG__  __CLAMAV_TAG__
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: contract-scanner-preview
+  annotations:
+    run.googleapis.com/ingress: all
+    # Domain Restricted Sharing? See service.yaml: uncomment instead of granting allUsers.
+    # run.googleapis.com/invoker-iam-disabled: "true"
+spec:
+  template:
+    metadata:
+      annotations:
+        run.googleapis.com/container-dependencies: '{"scanner-api":["clamav"]}'
+        run.googleapis.com/cpu-throttling: "true"        # request-based billing
+        run.googleapis.com/startup-cpu-boost: "true"     # faster ClamAV start
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "2"
+    spec:
+      serviceAccountName: contract-scanner-sa@__PROJECT_ID__.iam.gserviceaccount.com
+      containerConcurrency: 4
+      timeoutSeconds: 60
+      containers:
+        - name: scanner-api
+          image: __REGION__-docker.pkg.dev/__PROJECT_ID__/contract-scanner/scanner-api:__API_TAG__
+          ports:
+            - containerPort: 8080
+          env:
+            - name: SCAN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: contract-scanner-token-preview
+                  key: latest
+            - name: CLAMD_HOST
+              value: "127.0.0.1"
+            - name: CLAMD_PORT
+              value: "3310"
+            - name: MAX_UPLOAD_BYTES
+              value: "20971520"
+            - name: MAX_CONCURRENT_SCANS
+              value: "4"
+            - name: SCAN_TIMEOUT_MS
+              value: "20000"
+          resources:
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          startupProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 24
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            periodSeconds: 30
+            timeoutSeconds: 3
+        - name: clamav
+          image: __REGION__-docker.pkg.dev/__PROJECT_ID__/contract-scanner/clamav:__CLAMAV_TAG__
+          # No `ports`: ClamAV is reachable only on localhost from scanner-api.
+          resources:
+            limits:
+              cpu: "2"
+              memory: 4Gi                          # same as production: protection is not traded for cost
+          startupProbe:
+            tcpSocket:
+              port: 3310
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 60

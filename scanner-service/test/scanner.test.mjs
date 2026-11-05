@@ -198,13 +198,43 @@ test.describe('scanner service', () => {
     assert.ok(!/\.listen\(/.test(clamd), 'the ClamAV client never listens on a port');
   });
 
-  test('the Cloud Run definition keeps ClamAV private and gates the API on ClamAV readiness', () => {
-    const yaml = fs.readFileSync(path.join(here, '../service.yaml'), 'utf8');
-    const clamav = yaml.slice(yaml.indexOf('- name: clamav'));
-    assert.ok(!/\bports:/.test(clamav), 'the ClamAV sidecar declares no ports');
-    assert.match(yaml, /container-dependencies.*scanner-api.*clamav/);
-    assert.match(yaml, /path: \/ready/);
-    assert.match(yaml, /secretKeyRef/);
-    assert.ok(!/SCAN_TOKEN\s*\n\s*value:/.test(yaml), 'the token comes from Secret Manager, not a literal');
+  test('both Cloud Run definitions keep ClamAV private, gate the API on ClamAV, and use a dedicated identity and Secret Manager', () => {
+    for (const file of ['service.yaml', 'service.preview.yaml']) {
+      const yaml = fs.readFileSync(path.join(here, '..', file), 'utf8');
+      const code = yaml.replace(/^\s*#.*$/gm, '');
+      const clamav = code.slice(code.indexOf('- name: clamav'));
+      assert.ok(!/\bports:/.test(clamav), `${file}: the ClamAV sidecar must declare no ports`);
+      assert.equal((code.match(/containerPort:/g) || []).length, 1, `${file}: exactly one published port (the API)`);
+      assert.match(code, /containerPort: 8080/);
+      assert.match(code, /container-dependencies.*scanner-api.*clamav/);
+      assert.match(code, /path: \/ready/);
+      assert.match(code, /secretKeyRef:/);
+      assert.ok(!/SCAN_TOKEN\s*\n\s*value:/.test(code), `${file}: the token comes from Secret Manager, not a literal`);
+      assert.match(code, /serviceAccountName: contract-scanner-sa@__PROJECT_ID__\.iam\.gserviceaccount\.com/, `${file}: dedicated service account`);
+      assert.ok(!/compute@developer/.test(code), `${file}: must not use the default Compute Engine account`);
+      assert.match(code, /memory: 4Gi/, `${file}: ClamAV keeps 4 GiB in every configuration`);
+      assert.match(code, /MAX_UPLOAD_BYTES\s*\n\s*value: "20971520"/);
+      assert.match(code, /maxScale/, `${file}: bounded scale`);
+      assert.match(code, /image: __REGION__-docker\.pkg\.dev\/__PROJECT_ID__\//, `${file}: images come from your Artifact Registry`);
+      assert.ok(!/image: (docker\.io|clamav\/)/.test(code), `${file}: no direct Docker Hub image`);
+      assert.ok(!/allUsers/.test(code), `${file}: public invoker access is granted explicitly, not hidden in YAML`);
+    }
+  });
+
+  test('production is always ready; preview scales to zero; the access model is documented', () => {
+    const prod = fs.readFileSync(path.join(here, '../service.yaml'), 'utf8').replace(/^\s*#.*$/gm, '');
+    const preview = fs.readFileSync(path.join(here, '../service.preview.yaml'), 'utf8').replace(/^\s*#.*$/gm, '');
+    assert.match(prod, /minScale": ?"1"|minScale: "1"/);
+    assert.match(prod, /cpu-throttling: "false"/);
+    assert.match(preview, /minScale: "0"/);
+    assert.match(preview, /cpu-throttling: "true"/);
+    assert.match(prod, /name: contract-scanner\n/);
+    assert.match(preview, /name: contract-scanner-preview\n/);
+    assert.match(prod, /name: contract-scanner-token(?!-)/);
+    assert.match(preview, /name: contract-scanner-token-preview/, 'preview uses its own secret');
+    const readme = fs.readFileSync(path.join(here, '../README.md'), 'utf8');
+    for (const must of ['roles/run.invoker', 'roles/secretmanager.secretAccessor', 'EICAR', 'invoker-iam-disabled', 'CLAMAV_SCAN_URL', 'CLAMAV_SCAN_TOKEN']) {
+      assert.ok(readme.includes(must), `README must cover ${must}`);
+    }
   });
 });

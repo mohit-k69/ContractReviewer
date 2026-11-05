@@ -1,76 +1,96 @@
-# Cloud Run multi-container service: the scanning API (ingress) plus a private ClamAV sidecar.
+# PRODUCTION: always-ready Cloud Run service (one warm instance, CPU always allocated).
 #
-#   Internet --HTTPS--> scanner-api (:8080) --localhost:3310--> clamav (sidecar)
+#   Internet --HTTPS--> scanner-api (:8080) --localhost:3310--> clamav sidecar (no ports, never routed)
 #
-# Only the ingress container's port is reachable from outside. The sidecar declares no `ports`, so ClamAV's TCP port
-# 3310 is never routed to the internet; the two containers share a network namespace and talk over localhost.
+# Placeholders to replace before deploying (the README gives a sed command):
+#   __PROJECT_ID__  __REGION__  __API_TAG__  __CLAMAV_TAG__
 #
-# Replace the REGION / PROJECT_ID / REPO / TAG placeholders, then:
-#   gcloud run services replace service.yaml --region REGION
+# Access model
+#   * Cloud Run IAM: `allUsers` holds roles/run.invoker (granted with `gcloud run services add-iam-policy-binding`,
+#     see README step 7) so that Vercel, which cannot present a Google identity token, can reach the service.
+#   * Application layer: POST /scan is rejected with 401 unless it carries `Authorization: Bearer <SCAN_TOKEN>`.
+#     The token is checked BEFORE the request body is read. /health and /ready are unauthenticated by design
+#     (they reveal only whether the process and ClamAV are up).
+#   * ClamAV's TCP port 3310 is never published: the sidecar declares no `ports`, so only the scanner-api port
+#     (8080) is routed. The containers share localhost inside the instance.
 apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
   name: contract-scanner
   annotations:
-    run.googleapis.com/ingress: all          # reachable over HTTPS; every /scan call must carry the bearer token
+    run.googleapis.com/ingress: all
+    # If your organisation enforces Domain Restricted Sharing, granting `allUsers` fails. Then uncomment the next
+    # line INSTEAD of granting allUsers (it turns the Cloud Run invoker IAM check off; the bearer token still
+    # protects POST /scan):
+    # run.googleapis.com/invoker-iam-disabled: "true"
 spec:
   template:
     metadata:
       annotations:
-        # The scanning API starts only after ClamAV passes its startup probe (signatures loaded).
+        # scanner-api starts only after ClamAV has loaded its signatures and passed its startup probe.
         run.googleapis.com/container-dependencies: '{"scanner-api":["clamav"]}'
-        # ClamAV refreshes signatures in the background, so keep CPU allocated and keep one instance warm
-        # (loading signatures takes a while; avoids a cold start on the first upload).
+        # CPU stays allocated between requests so freshclam can keep the signature database current, and one
+        # instance is always warm so the first upload after a quiet period is not delayed by a ClamAV start.
         run.googleapis.com/cpu-throttling: "false"
+        run.googleapis.com/startup-cpu-boost: "true"
         autoscaling.knative.dev/minScale: "1"
-        autoscaling.knative.dev/maxScale: "5"
+        autoscaling.knative.dev/maxScale: "3"      # caps cost and abuse; ~US$0.23 per extra instance-hour
     spec:
+      # Dedicated identity whose ONLY permission is Secret Accessor on this service's secret (see README step 3).
+      serviceAccountName: contract-scanner-sa@__PROJECT_ID__.iam.gserviceaccount.com
       containerConcurrency: 4
       timeoutSeconds: 60
       containers:
         - name: scanner-api
-          image: REGION-docker.pkg.dev/PROJECT_ID/REPO/contract-scanner:TAG
+          image: __REGION__-docker.pkg.dev/__PROJECT_ID__/contract-scanner/scanner-api:__API_TAG__
           ports:
             - containerPort: 8080
           env:
             - name: SCAN_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: contract-scanner-token   # Secret Manager secret holding the shared bearer token
-                  key: latest
+                  name: contract-scanner-token     # Secret Manager secret
+                  key: latest                      # version (read when an instance starts)
             - name: CLAMD_HOST
               value: "127.0.0.1"
             - name: CLAMD_PORT
               value: "3310"
             - name: MAX_UPLOAD_BYTES
-              value: "20971520"                  # 20 MB, the same limit as the application
+              value: "20971520"                    # 20 MB, same limit as the application
+            - name: MAX_CONCURRENT_SCANS
+              value: "4"
+            - name: SCAN_TIMEOUT_MS
+              value: "20000"
           resources:
             limits:
               cpu: "1"
-              memory: 512Mi
-          # Not routed any traffic until ClamAV answers PING.
+              memory: 1Gi                          # up to 4 x 20 MB uploads held in memory, with headroom
+          # Receives no traffic until ClamAV answers PING.
           startupProbe:
             httpGet:
               path: /ready
               port: 8080
             periodSeconds: 5
             timeoutSeconds: 3
-            failureThreshold: 60
+            failureThreshold: 24
           livenessProbe:
             httpGet:
               path: /health
               port: 8080
             periodSeconds: 30
+            timeoutSeconds: 3
         - name: clamav
-          image: clamav/clamav:1.4
+          image: __REGION__-docker.pkg.dev/__PROJECT_ID__/contract-scanner/clamav:__CLAMAV_TAG__
           # No `ports`: ClamAV is reachable only on localhost from scanner-api.
           resources:
             limits:
               cpu: "2"
-              memory: 4Gi                        # ClamAV loads the whole signature database into memory
+              # Do not lower this. ClamAV needs well over 1 GiB for its signatures, roughly double that while it
+              # reloads an updated database, and Cloud Run's in-memory file system counts the signature files too.
+              memory: 4Gi
           startupProbe:
             tcpSocket:
               port: 3310
             periodSeconds: 10
             timeoutSeconds: 3
-            failureThreshold: 60                 # up to 10 minutes for the first signature load
+            failureThreshold: 60                   # up to 10 minutes for the first signature load
