@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { describeStartupEnvironment } from './runtimeDiagnostics';
 
 type NodeHandler = (req: IncomingMessage, res: ServerResponse) => void;
 
@@ -27,6 +28,8 @@ let appPromise: Promise<NodeHandler> | null = null;
 function getApp(): Promise<NodeHandler> {
   if (!appPromise) {
     appPromise = (async () => {
+      // Safe diagnostic (no secret values): shows what this function instance actually sees at startup.
+      console.log('[vercel] startup environment:', JSON.stringify(describeStartupEnvironment()));
       const { createApp, initServerRuntime } = await import('./app');
       await initServerRuntime();
       return createApp() as unknown as NodeHandler;
@@ -45,7 +48,8 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     req.url = restoreApiPath(req.url);
     app(req, res);
   } catch (err: any) {
-    console.error('[vercel] backend failed to start:', err);
+    const diagnostics = describeStartupEnvironment();
+    console.error('[vercel] backend failed to start:', err, JSON.stringify(diagnostics));
     res.statusCode = 503;
     res.setHeader('Content-Type', 'application/json');
     res.end(
@@ -53,6 +57,8 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         error: 'Backend failed to start.',
         // Startup errors are configuration messages (never secrets); keep them short.
         detail: String(err?.message || 'unknown error').slice(0, 300),
+        // Presence flags only: never any secret value. Lets an operator see what the deployed function can read.
+        diagnostics,
       })
     );
   }
