@@ -33,4 +33,21 @@ test.describe('empty state on the right', () => {
     const css = fs.readFileSync(path.resolve(process.cwd(), 'src/index.css'), 'utf8');
     assert.match(css, /prefers-reduced-motion: reduce[\s\S]*animation: none/);
   });
+
+  test('a hairline divider and an almost invisible tint separate the two areas, with and without a review', () => {
+    const app = fs.readFileSync(path.resolve(process.cwd(), 'src/App.tsx'), 'utf8');
+    const main = /<main\s+className=\{`([^`]*)`\}/.exec(app)?.[1] ?? '';
+    // the divider and tint are in the part of the class list that does not depend on whether a review exists
+    const always = main.split('${')[0];
+    assert.match(always, /lg:border-r/);
+    assert.match(always, /lg:bg-\[#F9FAFB\]/);
+    assert.match(always, /border-\[#ECEEF2\]/);
+    // the left area is a full-height column beside the right area (not a card), so the divider spans the whole page
+    assert.match(app, /lg:flex">/);
+    assert.ok(!/rounded-(2xl|3xl|\[)/.test(main), 'no extra card around the panel');
+    // the tint is only a shade away from the page background
+    const lum = (hex: string) => hex.match(/\w\w/g)!.map((h) => parseInt(h, 16)).reduce((a, b) => a + b, 0) / 3;
+    assert.ok(Math.abs(lum('FDFDFD') - lum('F9FAFB')) <= 6, 'the difference is almost invisible');
+  });
 });
+

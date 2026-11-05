@@ -31,19 +31,17 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#FDFDFD] text-gray-900 antialiased p-6 sm:p-8 lg:p-10">
-      <div
-        className={`w-full flex flex-col lg:flex-row items-start gap-8 transition-all duration-300 ${
-          decisionReport ? 'max-w-7xl mx-auto' : ''
+    // One workspace, two areas: on the left you provide the contract, on the right you understand it. A hairline divider
+    // and an almost invisible tint on the left mark the two areas, and both stay in place once the review appears.
+    <div className="min-h-screen bg-[#FDFDFD] text-gray-900 antialiased lg:flex">
+      {/* Left: where the contract is provided. The form group is centred in the viewport and stays centred while a
+          long review scrolls beside it. */}
+      <main
+        className={`w-full border-[#ECEEF2] lg:w-[460px] lg:shrink-0 lg:border-b-0 lg:border-r lg:bg-[#F9FAFB] px-6 sm:px-8 lg:px-10 ${
+          decisionReport ? 'border-b bg-[#F9FAFB] py-6' : 'flex min-h-svh items-center py-8 lg:min-h-0 lg:py-0'
         }`}
       >
-        {/* Left panel. The whole form group is centred in the available height (and horizontally within the panel);
-            beside a report on large screens it stays centred in the viewport while the report scrolls. */}
-        <main
-          className={`w-full lg:w-[420px] lg:shrink-0 flex flex-col justify-center lg:sticky lg:top-10 lg:h-[calc(100svh-5rem)] ${
-            decisionReport ? '' : 'min-h-[calc(100svh-3rem)] sm:min-h-[calc(100svh-4rem)] lg:min-h-0'
-          }`}
-        >
+        <div className="flex w-full items-center lg:sticky lg:top-0 lg:h-screen">
           <div className="mx-auto flex w-full max-w-[22rem] flex-col gap-9">
             {/* Once a review is shown, the selectors step aside on small screens so the agreement name comes first. */}
             <div className={decisionReport ? 'hidden lg:block' : ''}>
@@ -70,22 +68,21 @@ export default function App() {
               )}
             </div>
           </div>
-        </main>
+        </div>
+      </main>
 
-        {/* Until there is a review, the right side invites the user to add a contract (large screens only) */}
-        {!decisionReport && (
-          <section aria-label="Review preview" className="hidden min-w-0 flex-1 items-center justify-center lg:flex lg:h-[calc(100svh-5rem)]">
-            <EmptyReviewState busy={Boolean(selectedFile?.isScanning)} />
-          </section>
-        )}
+      {/* Right: where the contract is understood */}
+      {!decisionReport && (
+        <section aria-label="Review preview" className="hidden min-w-0 flex-1 items-center justify-center px-12 lg:flex lg:h-screen">
+          <EmptyReviewState busy={Boolean(selectedFile?.isScanning)} />
+        </section>
+      )}
 
-        {/* The Contract Decision Report (the only result shown) */}
-        {decisionReport && (
-          <section className="w-full flex-1 min-w-0" aria-label="Contract review report">
-            <ContractReview key={decisionReport.generated_at} report={decisionReport} fileName={selectedFile?.name} />
-          </section>
-        )}
-      </div>
+      {decisionReport && (
+        <section className="flex min-w-0 flex-1 justify-center px-6 py-8 sm:px-8 lg:px-12 lg:py-10" aria-label="Contract review report">
+          <ContractReview key={decisionReport.generated_at} report={decisionReport} fileName={selectedFile?.name} />
+        </section>
+      )}
     </div>
   );
 }
