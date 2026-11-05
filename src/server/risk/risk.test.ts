@@ -16,7 +16,6 @@ import { INTELLIGENCE_GROUP_KEYS, INTELLIGENCE_SCHEMA } from '../understanding/i
 import { RiskFinding } from './types';
 import { generateRiskReport, getCachedRiskReport } from './riskService';
 import { createApp, initServerRuntime } from '../app';
-import { startClamAvDevDaemon } from '../security/clamavDevDaemon';
 import {
   initQuarantineStorage,
   storeInQuarantine,
@@ -614,7 +613,7 @@ function cleanReport(fileId: string, metadata: any, size: number): FullSecurityR
     authenticity: { passed: true, detectedFormat: 'txt', mimeMatch: true, doubleExtensionDetected: false, passwordProtected: false, corrupted: false, details: [] },
     structure: { passed: true, isZipBomb: false, entryCount: 1, decompressedSize: size, decompressionRatio: 1, pathTraversalAttempts: [], malformedStructure: false, details: [] },
     activeContent: { passed: true, hasJavaScript: false, hasAutomaticActions: false, hasLaunchActions: false, hasEmbeddedFiles: false, hasMacros: false, hasOleObjects: false, hasSuspiciousExternalRelationships: false, hasInvalidEncoding: false, details: [] },
-    malware: { passed: true, engine: 'MockEngine', threatsFound: [], scannerAvailable: true, details: [] },
+    malware: { passed: true, engine: 'MockEngine', threatsFound: [], scannerAvailable: true, details: [], genuine: true },
     promptInjection: { passed: true, flaggedPatterns: [], riskLevel: 'NONE', details: [] },
     scanDurationMs: 1,
     completedAt: new Date().toISOString(),
@@ -694,134 +693,105 @@ test.describe('Phase 3 — end-to-end through the existing pipeline', () => {
 });
 
 test.describe('Phase 3 — HTTP API (same Express app used by the server and by Vercel)', () => {
-  test('25. Health, authentication, upload, risk report, caching and ownership over real HTTP', async () => {
+  async function withServer<T>(run: (base: string, newCookie: () => Promise<string>) => Promise<T>): Promise<T> {
     delete process.env.GEMINI_API_KEY;
-    process.env.ALLOW_DEMO_SCANNER = '1'; // the demo scanner must be enabled explicitly, and is for tests only
-    const daemon = await startClamAvDevDaemon();
-    process.env.CLAMAV_HOST = daemon.host;
-    process.env.CLAMAV_PORT = String(daemon.port);
+    delete process.env.CLAMAV_HOST;
+    delete process.env.CLAMAV_SCAN_URL;
     await initServerRuntime();
-
     const server = createServer(createApp());
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-
+    const newCookie = async () => {
+      const r = await fetch(`${base}/api/auth/session`);
+      assert.equal(r.status, 200);
+      return r.headers.getSetCookie()[0].split(';')[0];
+    };
     try {
+      return await run(base, newCookie);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }
+  const uploadForm = (text: string, name = 'pasted-contract.txt') => {
+    const form = new FormData();
+    form.append('file', new Blob([text], { type: 'text/plain' }), name);
+    return form;
+  };
+
+  test('25. Health, authentication and the single-request workflow over real HTTP; step-by-step endpoints are disabled', async () => {
+    await withServer(async (base, newCookie) => {
       const health = await (await fetch(`${base}/api/health`)).json();
       assert.equal(health.ok, true);
-      assert.ok(health.routes.some((r: string) => r.includes('risk-report')));
+      assert.deepEqual(health.antivirus, { mode: 'none', configured: false, genuine: false });
+      assert.equal(health.securityPolicy.scanLevel, 'basic-checks-only');
+      assert.equal(health.securityPolicy.fullAntivirusScanning, false);
+      assert.ok(health.routes.some((r: string) => r.includes('analyze=1')));
 
       // Unauthenticated access is rejected on every protected route (not 404)
       for (const [method, p] of [
         ['POST', '/api/contracts/x/risk-report'], ['GET', '/api/contracts/x/risk-report'],
         ['POST', '/api/contracts/x/understand'], ['GET', '/api/contracts/x/security-status'],
       ] as const) {
-        const r = await fetch(`${base}${p}`, { method });
-        assert.equal(r.status, 401, `${method} ${p}`);
+        assert.equal((await fetch(`${base}${p}`, { method })).status, 401, `${method} ${p}`);
       }
 
-      const cookieOf = async () => {
-        const r = await fetch(`${base}/api/auth/session`);
-        assert.equal(r.status, 200);
-        return r.headers.getSetCookie()[0].split(';')[0];
-      };
-      const cookieA = await cookieOf();
-      const cookieB = await cookieOf();
+      const cookieA = await newCookie();
+      const cookieB = await newCookie();
 
       // "Pasted" contract text is uploaded as a .txt file through the same pipeline
-      const pasted = fs.readFileSync(SAMPLE_PATH, 'utf8');
-      const form = new FormData();
-      form.append('file', new Blob([pasted], { type: 'text/plain' }), 'pasted-contract.txt');
-      const up = await fetch(`${base}/api/contracts/upload`, { method: 'POST', headers: { cookie: cookieA }, body: form });
+      const up = await fetch(`${base}/api/contracts/upload?analyze=1`, { method: 'POST', headers: { cookie: cookieA }, body: uploadForm(fs.readFileSync(SAMPLE_PATH, 'utf8')) });
       assert.equal(up.status, 200);
-      const security = await up.json();
-      assert.equal(security.status, 'CLEAN_NO_KNOWN_THREATS', JSON.stringify(security).slice(0, 300));
-      assert.equal(security.eligibleForContractProcessing, true);
-      const fileId = security.fileId;
+      const body = await up.json();
+      assert.equal(body.status, 'BASIC_CHECKS_PASSED_NO_ANTIVIRUS', JSON.stringify(body).slice(0, 300));
+      assert.equal(body.eligibleForContractProcessing, true);
+      assert.equal(body.analysis.riskReport.overview.review_priority, 'High');
+      assert.ok(body.analysis.riskReport.findings.length >= 10);
+      assert.ok(body.analysis.decisionReport);
+      assert.equal(body.documentDeleted, true);
 
-      // No report before analysis
-      assert.equal((await fetch(`${base}/api/contracts/${fileId}/risk-report`, { headers: { cookie: cookieA } })).status, 404);
-
-      const post = await fetch(`${base}/api/contracts/${fileId}/risk-report`, { method: 'POST', headers: { cookie: cookieA } });
-      assert.equal(post.status, 200);
-      const report = await post.json();
-      assert.equal(report.overview.review_priority, 'High');
-      assert.ok(report.findings.length >= 10);
-      assert.ok(report.key_terms.length > 0);
-
-      const get = await fetch(`${base}/api/contracts/${fileId}/risk-report`, { headers: { cookie: cookieA } });
-      assert.equal(get.status, 200);
-      assert.equal((await get.json()).document_id, report.document_id);
-
-      // Another session cannot read or generate the report
-      assert.equal((await fetch(`${base}/api/contracts/${fileId}/risk-report`, { headers: { cookie: cookieB } })).status, 403);
-      assert.equal((await fetch(`${base}/api/contracts/${fileId}/risk-report`, { method: 'POST', headers: { cookie: cookieB } })).status, 403);
-
-      // The existing endpoints keep working on the same file
-      assert.equal((await fetch(`${base}/api/contracts/${fileId}/understand`, { headers: { cookie: cookieA } })).status, 200);
-      assert.equal((await fetch(`${base}/api/contracts/${fileId}/normalize`, { headers: { cookie: cookieA } })).status, 200);
-      assert.equal((await fetch(`${base}/api/contracts/${fileId}/extract`, { headers: { cookie: cookieA } })).status, 200);
-      assert.equal((await fetch(`${base}/api/contracts/${fileId}/security-status`, { headers: { cookie: cookieA } })).status, 200);
-      assert.equal((await fetch(`${base}/api/contracts/${fileId}`, { method: 'DELETE', headers: { cookie: cookieA } })).status, 200);
-    } finally {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      await daemon.close();
-    }
+      // The document and every intermediate result are gone: the step-by-step endpoints are disabled (410),
+      // for the owner and for anyone else, and a new session cannot retrieve anything either.
+      for (const cookie of [cookieA, cookieB]) {
+        for (const [method, path] of [
+          ['GET', 'risk-report'], ['POST', 'risk-report'], ['GET', 'understand'], ['POST', 'normalize'], ['GET', 'extract'], ['GET', 'security-status'],
+        ] as const) {
+          const r = await fetch(`${base}/api/contracts/${body.fileId}/${path}`, { method, headers: { cookie } });
+          assert.equal(r.status, 410, `${method} ${path}`);
+          assert.equal((await r.json()).status, 'GONE');
+        }
+      }
+      // Deleting is idempotent: nothing is retained
+      const del = await fetch(`${base}/api/contracts/${body.fileId}`, { method: 'DELETE', headers: { cookie: cookieA } });
+      assert.equal(del.status, 200);
+    });
   });
 
-  test('26. Single-request analysis (?analyze=1) returns every stage and still blocks malware', async () => {
-    delete process.env.GEMINI_API_KEY;
-    process.env.ALLOW_DEMO_SCANNER = '1'; // the demo scanner must be enabled explicitly, and is for tests only
-    const daemon = await startClamAvDevDaemon();
-    process.env.CLAMAV_HOST = daemon.host;
-    process.env.CLAMAV_PORT = String(daemon.port);
-    await initServerRuntime();
-
-    const server = createServer(createApp());
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-    const session = async () => (await fetch(`${base}/api/auth/session`)).headers.getSetCookie()[0].split(';')[0];
-
-    try {
-      const cookie = await session();
-      const form = new FormData();
-      form.append('file', new Blob([fs.readFileSync(SAMPLE_PATH, 'utf8')], { type: 'text/plain' }), 'pasted-contract.txt');
-      const res = await fetch(`${base}/api/contracts/upload?analyze=1`, { method: 'POST', headers: { cookie }, body: form });
+  test('26. Single-request analysis (?analyze=1) returns every stage; built-in checks still block malware', async () => {
+    await withServer(async (base, newCookie) => {
+      const cookie = await newCookie();
+      const res = await fetch(`${base}/api/contracts/upload?analyze=1`, { method: 'POST', headers: { cookie }, body: uploadForm(fs.readFileSync(SAMPLE_PATH, 'utf8'), 'pasted-contract.txt') });
       assert.equal(res.status, 200);
       const body = await res.json();
-      assert.equal(body.status, 'CLEAN_NO_KNOWN_THREATS');
+      assert.equal(body.status, 'BASIC_CHECKS_PASSED_NO_ANTIVIRUS');
       assert.ok(body.analysis.extractionResult, 'extraction stage');
       assert.ok(body.analysis.normalizedDocument.total_sections >= 8, 'normalization stage');
       assert.ok(body.analysis.understandingResult.stats.verification_percentage === 100, 'understanding + evidence verification');
       assert.equal(body.analysis.riskReport.overview.review_priority, 'High', 'risk report');
       assert.equal(body.analysis.error, undefined);
 
-      // The results persist in-process for the step-by-step endpoints too, owned by the same session only
-      const other = await session();
-      assert.equal((await fetch(`${base}/api/contracts/${body.fileId}/risk-report`, { headers: { cookie } })).status, 200);
-      assert.equal((await fetch(`${base}/api/contracts/${body.fileId}/risk-report`, { headers: { cookie: other } })).status, 403);
-
-      // Without ?analyze=1 the upload behaves exactly as before (security report only)
-      const plain = new FormData();
-      plain.append('file', new Blob(['Short note.'], { type: 'text/plain' }), 'note.txt');
-      const plainRes = await (await fetch(`${base}/api/contracts/upload`, { method: 'POST', headers: { cookie }, body: plain })).json();
+      // Without ?analyze=1 the upload is inspected (and deleted) but nothing is analysed
+      const plainRes = await (await fetch(`${base}/api/contracts/upload`, { method: 'POST', headers: { cookie }, body: uploadForm('Short note.', 'note.txt') })).json();
       assert.equal(plainRes.analysis, undefined);
+      assert.equal(plainRes.documentDeleted, true);
 
-      // Malware is detected as a THREAT and never reaches analysis
-      const evil = new FormData();
-      evil.append(
-        'file',
-        new Blob(['X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*'], { type: 'text/plain' }),
-        'evil.txt'
-      );
-      const evilRes = await (await fetch(`${base}/api/contracts/upload?analyze=1`, { method: 'POST', headers: { cookie }, body: evil })).json();
-      assert.equal(evilRes.status, 'THREAT_DETECTED');
-      assert.equal(evilRes.eligibleForContractProcessing, false);
-      assert.equal(evilRes.analysis, undefined);
-    } finally {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      await daemon.close();
-    }
+      // Malware is detected by the built-in signature check and never reaches analysis, with no antivirus configured
+      const evil = await (await fetch(`${base}/api/contracts/upload?analyze=1`, {
+        method: 'POST', headers: { cookie },
+        body: uploadForm('X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*', 'evil.txt'),
+      })).json();
+      assert.equal(evil.status, 'THREAT_DETECTED');
+      assert.equal(evil.eligibleForContractProcessing, false);
+      assert.equal(evil.analysis, undefined);
+    });
   });
 });
-

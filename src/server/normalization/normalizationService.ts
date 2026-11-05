@@ -1,3 +1,4 @@
+import { isProcessable } from '../security/eligibility';
 import crypto from 'node:crypto';
 import {
   getSecurityReport,
@@ -68,13 +69,15 @@ export async function normalizeContractDocument(
     };
   }
 
-  // 3. Confirm security status is CLEAN_NO_KNOWN_THREATS
-  if (report.status !== 'CLEAN_NO_KNOWN_THREATS') {
+  // 3. Confirm the document passed the security inspection (isProcessable)
+  if (!isProcessable(report)) {
     normalizationCache.delete(fileId);
     return {
       success: false,
       authorized: true,
-      error: `Security verification failed: Document status is ${report.status}. Only clean documents can be normalized.`,
+      error: report.eligibleForContractProcessing
+        ? `Security verification failed: Document status is ${report.status}. Only documents that passed the security inspection can be processed.`
+        : 'Security verification failed: Document is not eligible for contract processing.',
     };
   }
 
@@ -192,13 +195,15 @@ export function getCachedNormalization(
     };
   }
 
-  // 2. Confirm security status is CLEAN_NO_KNOWN_THREATS
-  if (report.status !== 'CLEAN_NO_KNOWN_THREATS') {
+  // 2. Confirm the document passed the security inspection (isProcessable)
+  if (!isProcessable(report)) {
     normalizationCache.delete(fileId);
     return {
       authorized: true,
       exists: false,
-      error: `Security verification failed: Document status is ${report.status}. Only clean documents are eligible.`,
+      error: report.eligibleForContractProcessing
+        ? `Security verification failed: Document status is ${report.status}. Only documents that passed the security inspection can be processed.`
+        : 'Security verification failed: Document is not eligible for contract processing.',
     };
   }
 

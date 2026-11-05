@@ -21,10 +21,30 @@ test.describe('security verdict shown to the user', () => {
     assert.match(v.title, /antivirus scan completed/i);
   });
 
-  test('demo scanner: never presented as clean antivirus', () => {
-    const v = parseUploadResponse(200, report({ statusMessage: 'DEMO SCANNER ONLY: no genuine antivirus scan was performed.' }, { genuine: false, scanner: 'demo' })).verdict;
-    assert.equal(v.kind, 'demo');
-    assert.match(v.title, /not antivirus/i);
+  test('basic checks only: shown with the fixed message, never as clean or safe', () => {
+    const basic = report(
+      { status: 'BASIC_CHECKS_PASSED_NO_ANTIVIRUS', statusMessage: 'Basic document security checks passed. Full antivirus scanning was not performed.' },
+      { passed: true, scannerAvailable: false, outcome: 'not_performed', scanner: 'none', genuine: false, engine: 'Built-in signature checks (not antivirus)' }
+    );
+    const v = parseUploadResponse(200, basic).verdict;
+    assert.equal(v.kind, 'basic');
+    assert.equal(v.processable, true);
+    assert.equal(v.message, 'Basic document security checks passed. Full antivirus scanning was not performed.');
+    assert.match(v.title, /antivirus not performed/i);
+    assert.ok(!/\b(clean|safe|malware[- ]free|virus[- ]free)\b/i.test(`${v.title} ${v.message}`));
+  });
+
+  test('a basic-checks report that claims a genuine scan, or that is not eligible, is not trusted', () => {
+    const lying = report({ status: 'BASIC_CHECKS_PASSED_NO_ANTIVIRUS' }, { genuine: true });
+    assert.equal(parseUploadResponse(200, lying).verdict.kind, 'error');
+    const ineligible = report({ status: 'BASIC_CHECKS_PASSED_NO_ANTIVIRUS', eligibleForContractProcessing: false }, { genuine: false });
+    assert.equal(parseUploadResponse(200, ineligible).verdict.processable, false);
+  });
+
+  test('a clean status without a genuine antivirus scan is never shown as clean', () => {
+    const v = parseUploadResponse(200, report({}, { genuine: false })).verdict;
+    assert.equal(v.kind, 'error');
+    assert.equal(v.processable, false);
   });
 
   test('threat detected and policy blocks: blocked, not processable', () => {

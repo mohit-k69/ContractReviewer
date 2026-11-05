@@ -1,3 +1,4 @@
+import { isProcessable } from '../security/eligibility';
 import crypto from 'node:crypto';
 import {
   getSecurityReport,
@@ -73,13 +74,13 @@ export async function understandContractDocument(
     };
   }
 
-  // 3. Confirm security status is CLEAN_NO_KNOWN_THREATS
-  if (report.status !== 'CLEAN_NO_KNOWN_THREATS') {
+  // 3. Confirm the document passed the security inspection (isProcessable)
+  if (!isProcessable(report)) {
     understandingCache.delete(fileId);
     return {
       success: false,
       authorized: true,
-      error: `Security verification failed: Document status is ${report.status}. Only clean documents can be analyzed.`,
+      error: `Security verification failed: Document status is ${report.status}. Only documents that passed the security inspection can be processed.`,
     };
   }
 
@@ -211,13 +212,13 @@ export function getCachedUnderstanding(
     };
   }
 
-  // 3. Confirm security status is CLEAN_NO_KNOWN_THREATS
-  if (report.status !== 'CLEAN_NO_KNOWN_THREATS') {
+  // 3. Confirm the document passed the security inspection (isProcessable)
+  if (!isProcessable(report)) {
     understandingCache.delete(fileId);
     return {
       authorized: true,
       exists: false,
-      error: `Security verification failed: Document status is ${report.status}. Only clean documents can be accessed.`,
+      error: `Security verification failed: Document status is ${report.status}. Only documents that passed the security inspection can be processed.`,
     };
   }
 

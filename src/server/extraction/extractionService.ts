@@ -1,3 +1,4 @@
+import { isProcessable } from '../security/eligibility';
 import crypto from 'node:crypto';
 import {
   getSecurityReport,
@@ -65,13 +66,13 @@ export async function extractContractDocument(
     };
   }
 
-  // 3. Confirm security status is CLEAN_NO_KNOWN_THREATS
-  if (report.status !== 'CLEAN_NO_KNOWN_THREATS') {
+  // 3. Confirm the document passed the security inspection (isProcessable)
+  if (!isProcessable(report)) {
     extractionCache.delete(fileId);
     return {
       success: false,
       authorized: true,
-      error: `Security verification failed: Document status is ${report.status}. Only clean documents can be processed.`,
+      error: `Security verification failed: Document status is ${report.status}. Only documents that passed the security inspection can be processed.`,
     };
   }
 
@@ -270,7 +271,7 @@ export function getCachedExtraction(
   }
 
   // 2. Document must be clean and eligible
-  if (report.status !== 'CLEAN_NO_KNOWN_THREATS' || !report.eligibleForContractProcessing) {
+  if (!isProcessable(report)) {
     extractionCache.delete(fileId);
     return {
       authorized: true,

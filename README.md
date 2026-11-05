@@ -58,9 +58,33 @@ paste it, or upload it.
 | `SESSION_SECRET` | **production** | Signs the HttpOnly session cookie. Any long random string; must be identical across instances. |
 | `GEMINI_API_KEY` | optional | Enables Gemini for the understanding stage. Without it the deterministic engine is used. |
 | `GEMINI_CONTRACT_MODEL` | optional | Overrides the default Gemini model. |
-| `CLAMAV_SCAN_URL` / `CLAMAV_SCAN_TOKEN` | **for any real deployment** | HTTPS ClamAV scanning service ([`scanner-service/`](scanner-service/README.md), Google Cloud Run). Server-side only. Without a real scanner, uploads return `UNAVAILABLE` and are **not analysed**. |
-| `CLAMAV_HOST` / `CLAMAV_PORT` | optional | A real ClamAV daemon over TCP (self-hosted alternative). |
-| `ALLOW_DEMO_SCANNER` | local only | Enables the embedded demo scanner (**not antivirus**). Refused on Vercel and in production. `npm run dev` sets it for you. |
+| `ANTIVIRUS_POLICY` | optional | `optional` (default): a configured ClamAV is used and enforced, otherwise the built-in checks decide. `required`: a genuine antivirus scan is mandatory (uploads are `UNAVAILABLE` without one). Any other value is treated as `required`. Same behaviour on Vercel Preview and Production. |
+| `CLAMAV_SCAN_URL` / `CLAMAV_SCAN_TOKEN` | optional | HTTPS ClamAV scanning service ([`scanner-service/`](scanner-service/README.md)). **Not needed for the MVP.** If set, it is enforced and fails closed. Server-side only. |
+| `CLAMAV_HOST` / `CLAMAV_PORT` | optional | A real ClamAV daemon over TCP (self-hosted alternative). Also enforced and fail-closed when set. |
+
+### Security checks and what they mean
+
+Every upload goes through these built-in checks, with or without an antivirus: file authenticity and MIME type, PDF/DOCX
+structure (ZIP bombs, path traversal), active content (JavaScript, macros, launch actions, embedded files, OLE),
+known-malicious-pattern signatures, and prompt-injection detection; plus session authentication, CSRF protection,
+SHA-256 integrity and upload size / concurrency / timeout limits.
+
+| Result (`status`) | Meaning |
+| --- | --- |
+| `CLEAN_NO_KNOWN_THREATS` | A **genuine** ClamAV scan completed and found nothing (`malware.genuine: true`). |
+| `BASIC_CHECKS_PASSED_NO_ANTIVIRUS` | All built-in checks passed. **Full antivirus scanning was not performed** (`malware.genuine: false`). This is *not* a malware-free result. |
+| `THREAT_DETECTED` / `SUSPICIOUS` / `REJECTED` | Blocked by a built-in check (or ClamAV). Nothing is analysed. |
+| `SCAN_FAILED` / `UNAVAILABLE` | A configured antivirus failed, or one is required and missing. Nothing is analysed (fail-closed). |
+
+Basic checks do not detect real malware that has no known signature and no active-content markers. For sensitive
+use, deploy the optional scanning service and/or set `ANTIVIRUS_POLICY=required`.
+
+### Documents are not retained
+
+`POST /api/contracts/upload?analyze=1` is the supported workflow. The uploaded file, its quarantine metadata, every
+intermediate result (extraction, normalization, understanding) and all server-side caches are deleted in a `finally`
+block when the request ends, whether it succeeded or failed (`documentDeleted` in the response says so). Nothing is
+restored at startup, and a safety-net sweep removes any debris from a crashed request after 10 minutes.
 
 ## API
 
@@ -71,12 +95,8 @@ session ownership. `GET /api/health` is unauthenticated and reports runtime and 
 | --- | --- |
 | `GET /api/auth/session` | Issue the session cookie |
 | `POST /api/contracts/upload[?analyze=1]` | Security inspection; with `analyze=1` also runs extraction → normalization → understanding → report in the same request |
-| `GET /api/contracts/:id/security-status` | Security report |
-| `POST` / `GET /api/contracts/:id/extract` | Phase 2A extraction (run / cached) |
-| `POST` / `GET /api/contracts/:id/normalize` | Phase 2B normalization (run / cached) |
-| `POST` / `GET /api/contracts/:id/understand` | Phase 2C understanding (run / cached) |
-| `POST` / `GET /api/contracts/:id/risk-report` | Phase 3 review report (build from understanding / cached only) |
-| `DELETE /api/contracts/:id` | Remove the document |
+| `GET/POST ... /api/contracts/:id/{security-status,extract,normalize,understand,risk-report}` | **Disabled** (`410 Gone`): documents are not retained, so there is nothing to fetch or continue. |
+| `DELETE /api/contracts/:id` | Idempotent no-op (nothing is retained) |
 
 ## Deploying to Vercel
 
@@ -94,8 +114,9 @@ Steps:
 1. Import the repo in Vercel. Leave the detected settings as they are: `vercel.json` only overrides the build command
    (`npm run build:vercel`). Do not add `framework`/`installCommand` overrides to `vercel.json`; a project with the Vite
    preset rejected them.
-2. Set **`SESSION_SECRET`** (required), **`CLAMAV_SCAN_URL`** and **`CLAMAV_SCAN_TOKEN`** (required for uploads to be scanned and
-   analysed; see [`scanner-service/`](scanner-service/README.md)) and, optionally, **`GEMINI_API_KEY`** in the project's environment variables.
+2. Set **`SESSION_SECRET`** (required) and, optionally, **`GEMINI_API_KEY`** in the project's environment variables.
+   No antivirus service is needed: the built-in checks run and uploads are labelled *basic checks only*. A genuine
+   antivirus is an optional later addition (`CLAMAV_SCAN_URL` / `CLAMAV_SCAN_TOKEN`, see `scanner-service/`).
 3. Deploy, then open `https://<your-deployment>/api/health`. It must return `{"ok":true,"runtime":"vercel-serverless",...}`.
    If `SESSION_SECRET` is missing it returns a JSON `503` that says so, instead of an opaque crash.
 
@@ -103,11 +124,9 @@ Serverless limits to know about:
 
 * **Request bodies are limited to ~4.5 MB on Vercel** (the app allows 20 MB elsewhere). Larger files get a clear
   "too large for this deployment" message; pasted text is unaffected.
-* **State is per function instance** (in-memory caches and `/tmp` quarantine). The UI therefore uses
-  `upload?analyze=1`, which runs the whole workflow inside a single request. The step-by-step endpoints work on
-  any single long-lived server but may return 403/404 on serverless if consecutive requests hit different instances.
-* There is no antivirus unless you deploy the scanning service (`scanner-service/`) and set `CLAMAV_SCAN_URL` / `CLAMAV_SCAN_TOKEN`. Until then every upload reports **Security scanning is unavailable** and nothing is analysed. Check `GET /api/health?probe=1`.
-* Quarantined files are kept in the instance's `/tmp` for at most 2 hours.
+* **Nothing is stored between requests**: the whole workflow runs inside the single `upload?analyze=1` request, and the
+  document and all intermediate results are deleted before the function returns.
+* Check `GET /api/health`: `securityPolicy.scanLevel` shows `basic-checks-only`, `antivirus` or `unavailable`.
 
 Alternatively run `npm start` on any Node host (`NODE_ENV=production`, `SESSION_SECRET` set) after `npm run build`; it
 serves the API and the built frontend from one process.

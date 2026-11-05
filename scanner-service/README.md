@@ -1,5 +1,10 @@
 # Contract scanner service (ClamAV on Google Cloud Run)
 
+> **Optional, future integration. Not required for the MVP.** ContractReviewer runs without it: with no antivirus
+> configured, the built-in security checks decide and uploads are labelled *basic checks only*. Nothing in this folder
+> is deployed or needed by default, and no Google Cloud, Cloud Run or Docker is required to run the application. If you
+> deploy it later and set `CLAMAV_SCAN_URL` / `CLAMAV_SCAN_TOKEN`, it is enforced and fails closed.
+
 A small HTTPS API in front of a **real ClamAV daemon**. The ContractReviewer backend (on Vercel) sends each uploaded
 document here; the document is scanned **in memory** and the verdict returned. Nothing is stored, and file contents and
 file names are never logged.
@@ -227,7 +232,7 @@ In **Vercel → Project → Settings → Environment Variables**:
 | `CLAMAV_SCAN_TOKEN` | Production | the **production** token (mark as *Sensitive*) |
 
 `SESSION_SECRET` stays as it is. Do **not** prefix these names with `VITE_` or `NEXT_PUBLIC_` (that would publish
-them to the browser). Do not set `CLAMAV_HOST`, and do not set `ALLOW_DEMO_SCANNER` (it is ignored on Vercel).
+them to the browser). Do not set `CLAMAV_HOST`.
 
 To copy a token into Vercel without printing it, open **Secret Manager → the secret → Versions → ⋮ → View secret
 value**, or, on macOS: `gcloud secrets versions access latest --secret=contract-scanner-token-preview | pbcopy`.

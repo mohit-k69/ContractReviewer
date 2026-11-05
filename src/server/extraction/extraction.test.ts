@@ -185,6 +185,7 @@ function createMockSecurityReport(
       engine: 'ClamAV-Daemon',
       threatsFound: status === 'CLEAN_NO_KNOWN_THREATS' ? [] : ['Win.Test.EICAR'],
       scannerAvailable: true,
+      genuine: true, // a genuine ClamAV scan: the only way to be CLEAN_NO_KNOWN_THREATS
       details: [],
     },
     promptInjection: {

@@ -12,8 +12,6 @@ import { closedPort, EICAR, startFakeClamd } from '../../../scanner-service/test
 import { runSecurityInspectionPipeline } from './pipeline';
 import { scanForMalware } from './malwareScanner';
 import { scanViaService, validateScanUrl } from './clamavServiceClient';
-import { demoScannerAllowed, scannerMode } from './scannerConfig';
-import { startClamAvDevDaemon } from './clamavDevDaemon';
 
 const TOKEN = 'integration-token-0123456789-abcdef';
 const CONTRACT = Buffer.from('Independent Contractor Agreement\nSection 1. Services. Contractor shall provide design services.\n');
@@ -51,6 +49,15 @@ test.describe('scanning service client -> real service code -> ClamAV protocol',
       assert.equal(report.malware.genuine, true);
       assert.match(report.malware.engine, /^ClamAV/);
       assert.match(report.statusMessage, /No known threats detected/);
+    });
+  });
+
+  test('the scanning service blocks EICAR (genuine ClamAV outcome)', async () => {
+    await withService(async (url) => {
+      const r = await scanForMalware(Buffer.from(EICAR), { scanUrl: url, scanToken: TOKEN });
+      assert.equal(r.outcome, 'threat');
+      assert.equal(r.genuine, true);
+      assert.ok(r.threatsFound.some((t) => /Eicar/i.test(t)));
     });
   });
 
@@ -170,64 +177,10 @@ test.describe('scanning service client -> real service code -> ClamAV protocol',
   });
 });
 
-test.describe('no real scanner configured', () => {
-  const saved = { ...process.env };
-  const reset = () => { for (const k of ['CLAMAV_SCAN_URL', 'CLAMAV_SCAN_TOKEN', 'CLAMAV_HOST', 'CLAMAV_PORT', 'ALLOW_DEMO_SCANNER', 'VERCEL', 'NODE_ENV']) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } };
-  test.afterEach(reset);
-
-  test('nothing configured: UNAVAILABLE, scannerAvailable false, not eligible, clear message', async () => {
-    reset();
-    delete process.env.CLAMAV_SCAN_URL; delete process.env.CLAMAV_HOST;
-    assert.equal(scannerMode(), 'none');
-    const report = await runSecurityInspectionPipeline(CONTRACT, 'contract.txt', 'text/plain', 'sess');
-    assert.equal(report.status, 'UNAVAILABLE');
-    assert.equal(report.malware.scannerAvailable, false);
-    assert.equal(report.malware.genuine, false);
-    assert.equal(report.eligibleForContractProcessing, false);
-    assert.match(report.statusMessage, /Security scanning is unavailable/);
-    assert.match(report.statusMessage, /not scanned and has not been analysed/);
-  });
-
-  test('the demo scanner needs explicit enablement and is refused on Vercel and in production', async () => {
-    const demo = await startClamAvDevDaemon();
-    try {
-      process.env.CLAMAV_HOST = demo.host; process.env.CLAMAV_PORT = String(demo.port);
-      assert.equal(scannerMode(), 'demo');
-
-      // Not enabled -> unavailable (even though a socket answers "OK")
-      delete process.env.ALLOW_DEMO_SCANNER;
-      let r = await scanForMalware(CONTRACT);
-      assert.equal(r.outcome, 'unavailable');
-      assert.equal(r.scannerAvailable, false);
-
-      // Enabled locally -> usable, but explicitly NOT genuine
-      process.env.ALLOW_DEMO_SCANNER = '1';
-      assert.equal(demoScannerAllowed(), true);
-      r = await scanForMalware(CONTRACT);
-      assert.equal(r.outcome, 'clean');
-      assert.equal(r.scanner, 'demo');
-      assert.equal(r.genuine, false);
-      assert.match(r.details.join(' '), /not antivirus/i);
-      const report = await runSecurityInspectionPipeline(CONTRACT, 'contract.txt', 'text/plain', 'sess');
-      assert.equal(report.malware.genuine, false);
-      assert.match(report.statusMessage, /DEMO SCANNER ONLY/);
-
-      // Enabled but on Vercel / production -> refused
-      for (const env of [{ VERCEL: '1' }, { NODE_ENV: 'production' }]) {
-        Object.assign(process.env, env);
-        assert.equal(demoScannerAllowed(), false);
-        const blocked = await runSecurityInspectionPipeline(CONTRACT, 'contract.txt', 'text/plain', 'sess');
-        assert.equal(blocked.status, 'UNAVAILABLE', JSON.stringify(env));
-        assert.equal(blocked.eligibleForContractProcessing, false);
-        delete process.env.VERCEL; process.env.NODE_ENV = saved.NODE_ENV ?? ''; if (!saved.NODE_ENV) delete process.env.NODE_ENV;
-      }
-    } finally { await demo.close(); }
-  });
-
-  test('a real ClamAV daemon over TCP is genuine; its failure is an error, not clean', async () => {
+test.describe('optional antivirus: a configured scanner is enforced and fails closed', () => {
+  test('a ClamAV daemon over TCP is genuine; its failure is an error, not clean and not basic mode', async () => {
     const clamd = await startFakeClamd(); // protocol double standing in for clamd
     try {
-      // Plain TCP clamd stand-in answering zINSTREAM
       const ok = await scanForMalware(CONTRACT, { clamavHost: '127.0.0.1', clamavPort: clamd.port, timeoutMs: 1500 });
       assert.equal(ok.outcome, 'clean');
       assert.equal(ok.scanner, 'clamav-tcp');
@@ -236,6 +189,9 @@ test.describe('no real scanner configured', () => {
     const down = await scanForMalware(CONTRACT, { clamavHost: '127.0.0.1', clamavPort: await closedPort(), timeoutMs: 800 });
     assert.equal(down.outcome, 'error');
     assert.equal(down.scannerAvailable, false);
+    const report = await runSecurityInspectionPipeline(CONTRACT, 'contract.txt', 'text/plain', 'sess', { clamavHost: '127.0.0.1', clamavPort: await closedPort(), timeoutMs: 800 });
+    assert.equal(report.status, 'SCAN_FAILED');
+    assert.equal(report.eligibleForContractProcessing, false);
   });
 });
 
@@ -259,23 +215,37 @@ function probe(env: Record<string, string>): Promise<any> {
 const SAMPLE = fs.readFileSync(path.resolve(process.cwd(), 'samples', 'risky-freelance-agreement.txt'), 'utf8');
 
 test.describe('Vercel production path (built from the real handler)', () => {
-  test('no scanner configured: health says not configured; upload is UNAVAILABLE and nothing is analysed', async () => {
+  test('no antivirus configured (MVP): basic checks decide, the file is analysed, and the result is labelled as basic only', async () => {
     const r = await probe({ PROBE_FILE_TEXT: SAMPLE });
     assert.deepEqual(r.health.antivirus, { mode: 'none', configured: false, genuine: false });
     assert.equal(r.http, 200);
-    assert.equal(r.status, 'UNAVAILABLE');
-    assert.equal(r.eligible, false);
-    assert.equal(r.malware.scannerAvailable, false);
-    assert.equal(r.hasAnalysis, false);
-    assert.equal(r.hasExtraction, false);
-    assert.equal(r.hasDecisionReport, false);
-    assert.match(r.statusMessage, /Security scanning is unavailable/);
-    assert.ok(!/DEMO scanner enabled/i.test(r.logs), 'the demo scanner must not start on Vercel');
+    assert.equal(r.status, 'BASIC_CHECKS_PASSED_NO_ANTIVIRUS');
+    assert.equal(r.eligible, true);
+    assert.equal(r.statusMessage, 'Basic document security checks passed. Full antivirus scanning was not performed.');
+    assert.equal(r.malware.genuine, false);
+    assert.equal(r.malware.outcome, 'not_performed');
+    assert.equal(r.hasDecisionReport, true);
+    assert.equal(r.documentDeleted, true);
   });
 
-  test('ALLOW_DEMO_SCANNER=1 does not start the demo scanner on Vercel', async () => {
-    const r = await probe({ PROBE_FILE_TEXT: SAMPLE, ALLOW_DEMO_SCANNER: '1' });
-    assert.equal(r.health.antivirus.mode, 'none');
+  test('Preview and Production behave the same with the same configuration', async () => {
+    const preview = await probe({ PROBE_FILE_TEXT: SAMPLE, VERCEL_ENV: 'preview' });
+    const production = await probe({ PROBE_FILE_TEXT: SAMPLE, VERCEL_ENV: 'production' });
+    for (const key of ['status', 'eligible', 'statusMessage', 'hasDecisionReport', 'documentDeleted'] as const) assert.deepEqual(preview[key], production[key], key);
+    assert.deepEqual(preview.malware, production.malware);
+    // ...including the stricter policy
+    const strictPreview = await probe({ PROBE_FILE_TEXT: SAMPLE, VERCEL_ENV: 'preview', ANTIVIRUS_POLICY: 'required' });
+    const strictProd = await probe({ PROBE_FILE_TEXT: SAMPLE, VERCEL_ENV: 'production', ANTIVIRUS_POLICY: 'required' });
+    for (const r of [strictPreview, strictProd]) {
+      assert.equal(r.status, 'UNAVAILABLE');
+      assert.equal(r.eligible, false);
+      assert.equal(r.hasAnalysis, false);
+      assert.equal(r.hasDecisionReport, false);
+    }
+  });
+
+  test('a mistyped ANTIVIRUS_POLICY fails closed instead of weakening the policy', async () => {
+    const r = await probe({ PROBE_FILE_TEXT: SAMPLE, ANTIVIRUS_POLICY: 'optionl' });
     assert.equal(r.status, 'UNAVAILABLE');
     assert.equal(r.hasDecisionReport, false);
   });

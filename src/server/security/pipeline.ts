@@ -2,39 +2,66 @@ import { inspectFileAuthenticity } from './authenticityInspector';
 import { inspectDocumentStructure } from './structureInspector';
 import { inspectActiveContent } from './activeContentInspector';
 import { scanForMalware } from './malwareScanner';
+import { builtInMalwareResult, inspectKnownThreats } from './knownThreatInspector';
+import { antivirusPolicy } from './scannerConfig';
 import { inspectPromptInjection } from './promptInjectionInspector';
 import {
   storeInQuarantine,
   saveSecurityReport,
+  deleteQuarantinedFile,
 } from './quarantineManager';
-import { FullSecurityReport, SecurityStatus } from './types';
+import { AntivirusPolicy, BASIC_CHECKS_MESSAGE, FileMetadata, FullSecurityReport, SecurityStatus } from './types';
 
 export const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024; // 20 MB
 
+export interface PipelineOptions {
+  /** Test/override hooks for the OPTIONAL antivirus */
+  clamavHost?: string;
+  clamavPort?: number;
+  timeoutMs?: number;
+  scanUrl?: string;
+  scanToken?: string;
+  fetchImpl?: typeof fetch;
+  /** Defaults to ANTIVIRUS_POLICY (optional unless set to something else) */
+  policy?: AntivirusPolicy;
+  requireExternalScanner?: boolean;
+}
+
+/**
+ * Runs every security check on an upload.
+ *
+ *   authenticity/MIME -> structure (ZIP bomb, traversal) -> active content (JS, macros, embedded files)
+ *   -> built-in known-threat signatures -> prompt-injection -> OPTIONAL antivirus (ClamAV)
+ *
+ * The built-in checks and prompt-injection always run, with or without an antivirus. The document is held in the
+ * quarantine only while this request is being processed: the caller deletes it afterwards, and this function deletes
+ * it itself if inspection throws.
+ */
 export async function runSecurityInspectionPipeline(
   buffer: Buffer,
   originalFilename: string,
   declaredMimeType: string,
   sessionId: string,
-  options: {
-    requireExternalScanner?: boolean;
-    clamavHost?: string;
-    clamavPort?: number;
-    timeoutMs?: number;
-    scanUrl?: string;
-    scanToken?: string;
-    fetchImpl?: typeof fetch;
-  } = {}
+  options: PipelineOptions = {}
+): Promise<FullSecurityReport> {
+  const stored = storeInQuarantine(buffer, originalFilename, declaredMimeType, sessionId);
+  try {
+    return await inspect(stored.fileId, stored.metadata, buffer, originalFilename, declaredMimeType, options);
+  } catch (err) {
+    deleteQuarantinedFile(stored.fileId, sessionId);
+    throw err;
+  }
+}
+
+async function inspect(
+  fileId: string,
+  metadata: FileMetadata,
+  buffer: Buffer,
+  originalFilename: string,
+  declaredMimeType: string,
+  options: PipelineOptions
 ): Promise<FullSecurityReport> {
   const startTime = Date.now();
-
-  // 1. Quarantining phase
-  const { fileId, metadata } = storeInQuarantine(
-    buffer,
-    originalFilename,
-    declaredMimeType,
-    sessionId
-  );
 
   // File size hard-gate
   if (buffer.length > MAX_FILE_SIZE_BYTES) {
@@ -239,65 +266,20 @@ export async function runSecurityInspectionPipeline(
     return report;
   }
 
-  // 5. Malware & Antivirus Scan
-  const malware = await scanForMalware(buffer, options);
-  if (!malware.scannerAvailable) {
-    // Fail-closed. "Unavailable" = no real scanner could be used; "scan failed" = a scan was attempted and did not complete.
-    const unavailable = malware.outcome === 'unavailable';
+  // 5. Built-in known-malicious-pattern check. Always runs; independent of any antivirus service.
+  const known = inspectKnownThreats(buffer);
+  const skippedPromptInjection = { passed: false, flaggedPatterns: [] as string[], riskLevel: 'NONE' as const, details: ['Prompt injection inspection skipped.'] };
+  const finish = (
+    status: SecurityStatus,
+    statusMessage: string,
+    malware: FullSecurityReport['malware'],
+    promptInjection: FullSecurityReport['promptInjection'],
+    eligible: boolean
+  ): FullSecurityReport => {
     const report: FullSecurityReport = {
       fileId,
-      status: unavailable ? 'UNAVAILABLE' : 'SCAN_FAILED',
-      statusMessage: malware.details[0] || 'Mandatory malware inspection failed.',
-      metadata,
-      authenticity,
-      structure,
-      activeContent,
-      malware,
-      promptInjection: {
-        passed: false,
-        flaggedPatterns: [],
-        riskLevel: 'NONE',
-        details: ['Prompt injection inspection skipped.'],
-      },
-      scanDurationMs: Date.now() - startTime,
-      eligibleForContractProcessing: false,
-      completedAt: new Date().toISOString(),
-    };
-    saveSecurityReport(report);
-    return report;
-  }
-
-  if (!malware.passed) {
-    const report: FullSecurityReport = {
-      fileId,
-      status: 'THREAT_DETECTED',
-      statusMessage: `Malicious signature detected: ${malware.threatsFound.join(', ')}`,
-      metadata,
-      authenticity,
-      structure,
-      activeContent,
-      malware,
-      promptInjection: {
-        passed: false,
-        flaggedPatterns: [],
-        riskLevel: 'NONE',
-        details: ['Prompt injection inspection skipped.'],
-      },
-      scanDurationMs: Date.now() - startTime,
-      eligibleForContractProcessing: false,
-      completedAt: new Date().toISOString(),
-    };
-    saveSecurityReport(report);
-    return report;
-  }
-
-  // 6. Prompt Injection inspection
-  const promptInjection = inspectPromptInjection(buffer, authenticity.detectedFormat);
-  if (!promptInjection.passed) {
-    const report: FullSecurityReport = {
-      fileId,
-      status: 'SUSPICIOUS',
-      statusMessage: 'Suspicious AI prompt override directives detected inside document text.',
+      status,
+      statusMessage,
       metadata,
       authenticity,
       structure,
@@ -305,33 +287,56 @@ export async function runSecurityInspectionPipeline(
       malware,
       promptInjection,
       scanDurationMs: Date.now() - startTime,
-      // Suspicious prompt injections are quarantined and not eligible for auto-processing
-      eligibleForContractProcessing: false,
+      eligibleForContractProcessing: eligible,
       completedAt: new Date().toISOString(),
     };
     saveSecurityReport(report);
     return report;
-  }
-
-  // 7. All checks passed cleanly
-  const report: FullSecurityReport = {
-    fileId,
-    status: 'CLEAN_NO_KNOWN_THREATS',
-    statusMessage:
-      malware.genuine === false
-        ? 'DEMO SCANNER ONLY: no genuine antivirus scan was performed. The other security checks passed. (Local development / tests.)'
-        : 'All mandatory security checks passed. No known threats detected.',
-    metadata,
-    authenticity,
-    structure,
-    activeContent,
-    malware,
-    promptInjection,
-    scanDurationMs: Date.now() - startTime,
-    eligibleForContractProcessing: true,
-    completedAt: new Date().toISOString(),
   };
 
-  saveSecurityReport(report);
-  return report;
+  if (!known.passed) {
+    return finish('THREAT_DETECTED', `Malicious signature detected: ${known.threatsFound.join(', ')}`, builtInMalwareResult(known), skippedPromptInjection, false);
+  }
+
+  // 6. Prompt-injection inspection. Always runs; independent of any antivirus service.
+  const promptInjection = inspectPromptInjection(buffer, authenticity.detectedFormat);
+  const builtIn = builtInMalwareResult(known);
+  if (!promptInjection.passed) {
+    return finish('SUSPICIOUS', 'Suspicious AI prompt override directives detected inside document text.', builtIn, promptInjection, false);
+  }
+
+  // 7. OPTIONAL antivirus. If one is configured it is enforced and fails closed; if none is configured, the policy decides.
+  const av = await scanForMalware(buffer, options);
+  const policy = options.policy ?? antivirusPolicy();
+
+  switch (av.outcome) {
+    case 'threat':
+      return finish('THREAT_DETECTED', `Malicious signature detected: ${av.threatsFound.join(', ')}`, { ...av, details: [...av.details, ...known.details] }, promptInjection, false);
+    case 'error':
+      // A configured antivirus failed (timeout, invalid response, bad credentials...): never downgrade to basic mode.
+      return finish('SCAN_FAILED', av.details[0] || 'The antivirus scan failed, so the document was not cleared.', av, promptInjection, false);
+    case 'unavailable':
+      return finish('UNAVAILABLE', av.details[0] || 'The antivirus scanner is unavailable, so the document was not scanned.', av, promptInjection, false);
+    case 'clean':
+      return finish('CLEAN_NO_KNOWN_THREATS', 'All mandatory security checks passed. No known threats detected.', { ...av, details: [...av.details, ...known.details] }, promptInjection, true);
+    default: {
+      // not_performed: no antivirus is configured
+      if (policy === 'required') {
+        return finish(
+          'UNAVAILABLE',
+          'Security scanning is unavailable: this deployment requires antivirus scanning (ANTIVIRUS_POLICY=required) but none is configured. Your document was not scanned and has not been analysed.',
+          { ...builtIn, outcome: 'unavailable', details: [...builtIn.details, 'Antivirus scanning is required but not configured.'] },
+          promptInjection,
+          false
+        );
+      }
+      return finish(
+        'BASIC_CHECKS_PASSED_NO_ANTIVIRUS',
+        BASIC_CHECKS_MESSAGE,
+        { ...builtIn, details: [...builtIn.details, 'Full antivirus scanning was not performed.'] },
+        promptInjection,
+        true
+      );
+    }
+  }
 }

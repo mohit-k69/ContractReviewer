@@ -92,16 +92,25 @@ async function startMockClamAVServer(behavior: 'clean' | 'threat' | 'error' | 't
   });
 }
 
-test('1. Fails closed (UNAVAILABLE) when no antivirus scanner is configured', async () => {
+test('1. With no antivirus configured the built-in checks decide: BASIC_CHECKS_PASSED_NO_ANTIVIRUS, never a clean antivirus result', async () => {
   const textBuf = Buffer.from('Independent Contractor Agreement\nSection 1. Terms.');
   // No clamavHost / scan URL provided and no CLAMAV_* environment variables
   const report = await runSecurityInspectionPipeline(textBuf, 'contract.txt', 'text/plain', 'sess-1');
 
+  assert.equal(report.status, 'BASIC_CHECKS_PASSED_NO_ANTIVIRUS');
+  assert.equal(report.eligibleForContractProcessing, true);
+  assert.equal(report.malware.genuine, false);
+  assert.equal(report.malware.outcome, 'not_performed');
+  assert.equal(report.statusMessage, 'Basic document security checks passed. Full antivirus scanning was not performed.');
+});
+
+test('1b. Fails closed (UNAVAILABLE) when antivirus is required and none is configured', async () => {
+  const textBuf = Buffer.from('Independent Contractor Agreement\nSection 1. Terms.');
+  const report = await runSecurityInspectionPipeline(textBuf, 'contract.txt', 'text/plain', 'sess-1', { policy: 'required' });
+
   assert.equal(report.status, 'UNAVAILABLE');
   assert.equal(report.eligibleForContractProcessing, false);
   assert.equal(report.malware.scannerAvailable, false);
-  assert.equal(report.malware.outcome, 'unavailable');
-  assert.equal(report.malware.genuine, false);
   assert.match(report.statusMessage, /Security scanning is unavailable.*not been analysed/);
 });
 

@@ -1,4 +1,6 @@
 import type { FullSecurityReport, SecurityStatus } from '../server/security/types';
+import { BASIC_CHECKS_MESSAGE } from '../server/security/types';
+import { isProcessable } from '../server/security/eligibility';
 
 /**
  * Turns the upload response into ONE explicit security decision the UI can show. Pure and framework-free, so it can
@@ -6,12 +8,13 @@ import type { FullSecurityReport, SecurityStatus } from '../server/security/type
  * string "undefined".
  *
  *   clean        a genuine antivirus (ClamAV) scan completed and found nothing
- *   demo         the local-development demo scanner "passed" the file; this is NOT antivirus (dev/test only)
+ *   basic        the built-in checks passed but NO antivirus scan was performed. This is not a clean result and the
+ *                document is never described as safe or malware-free.
  *   blocked      a threat or a policy violation: the document is blocked
  *   error        scanning (or the request) failed; the document was not cleared
  *   unavailable  no real scanner is configured or reachable; the document was not scanned
  */
-export type VerdictKind = 'clean' | 'demo' | 'blocked' | 'error' | 'unavailable';
+export type VerdictKind = 'clean' | 'basic' | 'blocked' | 'error' | 'unavailable';
 
 export interface SecurityVerdict {
   kind: VerdictKind;
@@ -22,7 +25,7 @@ export interface SecurityVerdict {
 }
 
 const KNOWN: ReadonlySet<string> = new Set<SecurityStatus>([
-  'RECEIVED', 'QUARANTINED', 'SCANNING', 'CLEAN_NO_KNOWN_THREATS', 'SUSPICIOUS', 'THREAT_DETECTED', 'REJECTED', 'SCAN_FAILED', 'UNAVAILABLE',
+  'RECEIVED', 'QUARANTINED', 'SCANNING', 'CLEAN_NO_KNOWN_THREATS', 'SUSPICIOUS', 'THREAT_DETECTED', 'REJECTED', 'SCAN_FAILED', 'UNAVAILABLE', 'BASIC_CHECKS_PASSED_NO_ANTIVIRUS',
 ]);
 
 export function isSecurityReport(body: unknown): body is FullSecurityReport {
@@ -44,16 +47,18 @@ const text = (v: unknown, max = 240): string => (typeof v === 'string' ? v.repla
 export function verdictOf(report: FullSecurityReport): SecurityVerdict {
   const message = text(report.statusMessage, 400);
   switch (report.status) {
-    case 'CLEAN_NO_KNOWN_THREATS': {
-      const genuine = report.malware.genuine;
-      if (!report.eligibleForContractProcessing || report.malware.scannerAvailable !== true || typeof genuine !== 'boolean') {
-        // Fail closed on an inconsistent report
+    case 'CLEAN_NO_KNOWN_THREATS':
+      // "Clean" is reserved for a genuine antivirus scan. Anything else claiming it fails closed.
+      if (!isProcessable(report) || report.malware.scannerAvailable !== true) {
         return { kind: 'error', title: 'Security result could not be trusted', message: 'The security result was inconsistent, so the document was not cleared.', processable: false };
       }
-      return genuine
-        ? { kind: 'clean', title: 'Clean — antivirus scan completed', message: 'A genuine antivirus scan (ClamAV) completed and found no known threats.', processable: true }
-        : { kind: 'demo', title: 'Demo scan only — not antivirus', message: message || 'A development stand-in scanner was used. No genuine antivirus scan was performed.', processable: true };
-    }
+      return { kind: 'clean', title: 'Clean — antivirus scan completed', message: 'A genuine antivirus scan (ClamAV) completed and found no known threats.', processable: true };
+    case 'BASIC_CHECKS_PASSED_NO_ANTIVIRUS':
+      if (!isProcessable(report)) {
+        return { kind: 'error', title: 'Security result could not be trusted', message: 'The security result was inconsistent, so the document was not cleared.', processable: false };
+      }
+      // Fixed wording. It deliberately does not say the file is safe, clean or malware-free.
+      return { kind: 'basic', title: 'Basic checks passed — antivirus not performed', message: BASIC_CHECKS_MESSAGE, processable: true };
     case 'THREAT_DETECTED':
       return { kind: 'blocked', title: 'Threat detected — document blocked', message: message || 'This document was blocked by the security inspection.', processable: false };
     case 'SUSPICIOUS':

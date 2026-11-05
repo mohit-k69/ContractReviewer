@@ -694,6 +694,7 @@ test.describe('Phase 2C — AI-Powered Contract Understanding Engine Tests', () 
         engine: 'MockEngine',
         threatsFound: [],
         scannerAvailable: true,
+        genuine: true, // a genuine ClamAV scan: the only way to be CLEAN_NO_KNOWN_THREATS
         details: [],
       },
       promptInjection: {
@@ -783,6 +784,7 @@ test.describe('Phase 2C — AI-Powered Contract Understanding Engine Tests', () 
         engine: 'MockEngine',
         threatsFound: [],
         scannerAvailable: true,
+        genuine: true, // a genuine ClamAV scan: the only way to be CLEAN_NO_KNOWN_THREATS
         details: [],
       },
       promptInjection: {

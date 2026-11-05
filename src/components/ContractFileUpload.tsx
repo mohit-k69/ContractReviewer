@@ -188,11 +188,9 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
         });
         if (analysis.error) setErrorMessage(analysis.error);
       } else {
+        // The document passed inspection but the server returned no analysis (and keeps no copy to retry).
         onFileSelect(scanned);
-        // Older/limited backends: fall back to the step-by-step workflow.
-        if (autoReview && securityReport.fileId) {
-          await runReview(securityReport.fileId, scanned);
-        }
+        setErrorMessage('The server did not return an analysis for this document, and it has been deleted. Please upload it again.');
       }
     } catch (err: any) {
       setIsScanning(false);
@@ -253,182 +251,25 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
     await runReview(selectedFile.securityReport.fileId, selectedFile);
   };
 
-  // Phase 3: builds the review report from the (cached) understanding. It never repeats extraction,
-  // normalization or the Gemini analysis on the server.
-  const fetchRiskReport = async (fileId: string): Promise<ContractRiskReport | undefined> => {
-    setIsGeneratingReport(true);
-    try {
-      const res = await fetch(`/api/contracts/${fileId}/risk-report`, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || `Risk report failed with HTTP ${res.status}`);
-      }
-      return (await res.json()) as ContractRiskReport;
-    } catch (err: any) {
-      setErrorMessage(err.message || 'Failed to build the risk report.');
-      return undefined;
-    } finally {
-      setIsGeneratingReport(false);
-    }
+  // Documents are processed in ONE request (?analyze=1) and deleted from the server immediately afterwards, so
+  // there is nothing left to extract, normalize or analyse step by step.
+  const STEP_BY_STEP_UNAVAILABLE =
+    'This document was processed in a single step and deleted from the server immediately afterwards, so it cannot be processed again. Please upload it again.';
+  const runReview = async (_fileId: string, _base: UploadedContractFile) => {
+    setErrorMessage(STEP_BY_STEP_UNAVAILABLE);
   };
-
-  const runReview = async (fileId: string, base: UploadedContractFile) => {
-    setIsExtracting(true);
-    setErrorMessage(null);
-
-    try {
-      const res = await fetch(`/api/contracts/${fileId}/extract`, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || `Extraction failed with HTTP ${res.status}`);
-      }
-
-      const extractionResult: DocumentExtractionResult = await res.json();
-      setIsExtracting(false);
-
-      // Auto-trigger Phase 2B normalization
-      setIsNormalizing(true);
-      let normalizedDocument: NormalizedDocument | undefined;
-      try {
-        const normRes = await fetch(`/api/contracts/${fileId}/normalize`, {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json' },
-        });
-        if (normRes.ok) {
-          normalizedDocument = await normRes.json();
-        }
-      } catch {
-        // Continue gracefully
-      } finally {
-        setIsNormalizing(false);
-      }
-
-      // Auto-trigger Phase 2C understanding if normalized
-      setIsUnderstanding(true);
-      let understandingResult: ContractUnderstandingResult | undefined;
-      if (normalizedDocument) {
-        try {
-          const undRes = await fetch(`/api/contracts/${fileId}/understand`, {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json' },
-          });
-          if (undRes.ok) {
-            understandingResult = await undRes.json();
-          }
-        } catch {
-          // Continue gracefully
-        } finally {
-          setIsUnderstanding(false);
-        }
-      } else {
-        setIsUnderstanding(false);
-      }
-
-      // Phase 3: build the evidence-backed review report from the verified understanding
-      const riskReport = understandingResult ? await fetchRiskReport(fileId) : undefined;
-
-      onFileSelect({
-        ...base,
-        extractionResult,
-        isExtracting: false,
-        normalizedDocument,
-        isNormalizing: false,
-        understandingResult,
-        isUnderstanding: false,
-        riskReport,
-        isGeneratingReport: false,
-      });
-    } catch (err: any) {
-      setIsExtracting(false);
-      setIsNormalizing(false);
-      setIsUnderstanding(false);
-      setErrorMessage(err.message || 'Failed to extract contract content.');
-    }
-  };
-
   const handleNormalizeContract = async () => {
-    if (!selectedFile?.securityReport?.fileId) return;
-    const fileId = selectedFile.securityReport.fileId;
-    setIsNormalizing(true);
-    setErrorMessage(null);
-
-    try {
-      const res = await fetch(`/api/contracts/${fileId}/normalize`, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-      });
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || `Normalization failed with HTTP ${res.status}`);
-      }
-
-      const normalizedDocument: NormalizedDocument = await res.json();
-      setIsNormalizing(false);
-      onFileSelect({
-        ...selectedFile,
-        normalizedDocument,
-        isNormalizing: false,
-      });
-    } catch (err: any) {
-      setIsNormalizing(false);
-      setErrorMessage(err.message || 'Failed to normalize contract structure.');
-    }
+    setErrorMessage(STEP_BY_STEP_UNAVAILABLE);
   };
-
   const handleUnderstandContract = async () => {
-    if (!selectedFile?.securityReport?.fileId) return;
-    const fileId = selectedFile.securityReport.fileId;
-    setIsUnderstanding(true);
-    setErrorMessage(null);
-
-    try {
-      const res = await fetch(`/api/contracts/${fileId}/understand`, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-      });
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || `Understanding analysis failed with HTTP ${res.status}`);
-      }
-
-      const understandingResult: ContractUnderstandingResult = await res.json();
-      setIsUnderstanding(false);
-      const riskReport = await fetchRiskReport(fileId);
-      onFileSelect({
-        ...selectedFile,
-        understandingResult,
-        isUnderstanding: false,
-        riskReport,
-        isGeneratingReport: false,
-      });
-    } catch (err: any) {
-      setIsUnderstanding(false);
-      setErrorMessage(err.message || 'Failed to analyze contract understanding.');
-    }
+    setErrorMessage(STEP_BY_STEP_UNAVAILABLE);
   };
 
   const report = selectedFile?.securityReport;
   const verdict = report ? verdictOf(report) : null;
-  // Only a genuine antivirus pass shows as "clean"; the dev-only demo scanner is shown separately.
+  // Only a genuine antivirus pass shows as "clean". Basic checks without antivirus are shown separately, as a caution.
   const isClean = verdict?.kind === 'clean';
-  const isDemo = verdict?.kind === 'demo';
+  const isDemo = verdict?.kind === 'basic';
   const hasThreat = !!verdict && !verdict.processable;
   const canProcess = !!verdict?.processable;
 
@@ -600,7 +441,7 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
                     className={
                       verdict?.kind === 'clean'
                         ? 'text-emerald-600 font-medium'
-                        : verdict?.kind === 'demo' || verdict?.kind === 'unavailable'
+                        : verdict?.kind === 'basic' || verdict?.kind === 'unavailable'
                         ? 'text-amber-600 font-semibold'
                         : 'text-rose-600 font-semibold'
                     }
@@ -613,7 +454,7 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
                       ? 'Threat Found'
                       : report.malware.genuine === true
                       ? `Clean (${report.malware.engine})`
-                      : 'Demo scanner — not antivirus'}
+                      : 'Not performed — basic checks only'}
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
@@ -804,14 +645,7 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
 
                 <div className="flex items-center justify-between pt-1 border-t border-gray-200/60 text-[10px] text-gray-400">
                   <span>SHA-256 Verified Match</span>
-                  <button
-                    type="button"
-                    onClick={handleReviewContract}
-                    disabled={isExtracting}
-                    className="text-blue-600 hover:text-blue-700 hover:underline cursor-pointer"
-                  >
-                    Re-extract
-                  </button>
+                  <span>Deleted from the server after analysis</span>
                 </div>
               </div>
             )}

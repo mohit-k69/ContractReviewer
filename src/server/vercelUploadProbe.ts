@@ -21,6 +21,7 @@ server.listen(0, '127.0.0.1', async () => {
       eligible: body.eligibleForContractProcessing,
       statusMessage: body.statusMessage,
       malware: body.malware && { outcome: body.malware.outcome, genuine: body.malware.genuine, scanner: body.malware.scanner, scannerAvailable: body.malware.scannerAvailable },
+      documentDeleted: body.documentDeleted,
       hasAnalysis: body.analysis !== undefined,
       hasExtraction: body.analysis?.extractionResult !== undefined,
       hasDecisionReport: body.analysis?.decisionReport !== undefined,

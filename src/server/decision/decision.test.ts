@@ -8,7 +8,6 @@ import { fixtureText, review, runPipeline, Reviewed, contractFrom } from '../ris
 import { analyzeContractRisk } from '../risk/riskEngine';
 import { buildClauseIndex } from '../risk/clauseIndex';
 import { createApp, initServerRuntime } from '../app';
-import { startClamAvDevDaemon } from '../security/clamavDevDaemon';
 import { buildDecisionReport } from './index';
 import { gateEvidence, makeVerifier } from './evidence';
 import { extractDates } from '../understanding/conflictDetector';
@@ -560,10 +559,8 @@ test.describe('Decision report: nothing is invented', () => {
 test.describe('Decision report: pipeline integration', () => {
   test('is built inside the single-request analysis and returned with the other results', async () => {
     delete process.env.GEMINI_API_KEY;
-    process.env.ALLOW_DEMO_SCANNER = '1'; // the demo scanner must be enabled explicitly, and is for tests only
-    const daemon = await startClamAvDevDaemon();
-    process.env.CLAMAV_HOST = daemon.host;
-    process.env.CLAMAV_PORT = String(daemon.port);
+    delete process.env.CLAMAV_HOST; // no antivirus: the built-in checks decide
+    delete process.env.CLAMAV_SCAN_URL;
     await initServerRuntime();
     const server = createServer(createApp());
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -591,7 +588,6 @@ test.describe('Decision report: pipeline integration', () => {
       assert.equal((await fetch(`${base}/api/contracts/${body.fileId}/decision-report`, { headers: { cookie } })).status, 404);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
-      await daemon.close();
     }
   });
 

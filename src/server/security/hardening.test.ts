@@ -15,7 +15,9 @@ import {
   reconcileQuarantineOnStartup,
   getCleanupFailures,
   QUARANTINE_DIR,
-  RETENTION_PERIOD_MS,
+  ORPHAN_MAX_AGE_MS,
+  sweepStaleFiles,
+  hasDocumentRecord,
 } from './quarantineManager';
 import { queryClamAVDaemon } from './malwareScanner';
 import {
@@ -115,32 +117,35 @@ test('ClamAV: handles socket streaming and backpressure with large buffer', asyn
   }
 });
 
-// 2. Quarantine reconciliation & restart survival
-test('Quarantine: reconciles on startup and purges files older than 2 hours', () => {
-  const oldSession = 'test-old-sess';
-  const { fileId, filePath } = storeInQuarantine(Buffer.from('expired contract'), 'old.txt', 'text/plain', oldSession);
-  const metaPath = path.join(QUARANTINE_DIR, `${fileId}.meta.json`);
+// 2. Quarantine: nothing survives a restart, and debris is swept
+test('Quarantine: startup deletes every leftover document and restores nothing', () => {
+  const live = storeInQuarantine(Buffer.from('fresh contract'), 'new.txt', 'text/plain', 'test-sess-a');
+  const old = storeInQuarantine(Buffer.from('older contract'), 'old.txt', 'text/plain', 'test-sess-b');
+  for (const f of [live, old]) {
+    assert.ok(fs.existsSync(f.filePath));
+    assert.ok(fs.existsSync(path.join(QUARANTINE_DIR, `${f.fileId}.meta.json`)));
+  }
 
-  assert.ok(fs.existsSync(filePath));
-  assert.ok(fs.existsSync(metaPath));
-
-  // Backdate metadata to 3 hours ago
-  const threeHoursAgo = new Date(Date.now() - (RETENTION_PERIOD_MS + 60 * 60 * 1000)).toISOString();
-  fs.writeFileSync(metaPath, JSON.stringify({
-    metadata: {
-      fileId,
-      originalName: 'old.txt',
-      fileSize: 16,
-      sessionId: oldSession,
-      uploadedAt: threeHoursAgo,
-    },
-  }));
-
-  // Run startup reconciliation
   const result = reconcileQuarantineOnStartup();
-  assert.ok(result.purged >= 1);
+  assert.ok(result.purged >= 4, 'both payloads and both metadata files are deleted');
+  assert.equal(result.restored, 0, 'documents are never restored');
+  for (const f of [live, old]) {
+    assert.equal(fs.existsSync(f.filePath), false);
+    assert.equal(fs.existsSync(path.join(QUARANTINE_DIR, `${f.fileId}.meta.json`)), false);
+  }
+});
+
+test('Quarantine: the safety-net sweep removes only debris older than the orphan age limit', () => {
+  const { fileId, filePath } = storeInQuarantine(Buffer.from('stuck contract'), 'stuck.txt', 'text/plain', 'test-sess-c');
+  const metaPath = path.join(QUARANTINE_DIR, `${fileId}.meta.json`);
+  assert.equal(sweepStaleFiles(), 0, 'a file from a request that is still running is left alone');
+  assert.ok(fs.existsSync(filePath));
+
+  const removed = sweepStaleFiles(Date.now() + ORPHAN_MAX_AGE_MS + 60 * 1000);
+  assert.ok(removed >= 2);
   assert.equal(fs.existsSync(filePath), false);
   assert.equal(fs.existsSync(metaPath), false);
+  assert.equal(hasDocumentRecord(fileId), false, 'the in-memory record is gone too');
 });
 
 // 3. CSRF / Origin protection

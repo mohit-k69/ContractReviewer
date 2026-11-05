@@ -1,32 +1,30 @@
+import { AntivirusPolicy } from './types';
+
 /**
- * Which antivirus (if any) this deployment is configured to use. One place decides, so the runtime start-up,
- * the scan itself and /api/health can never disagree.
+ * Which antivirus (if any) is configured. One place decides, so the pipeline and /api/health cannot disagree.
  *
- *   clamav-service : an authenticated HTTPS scanning service running a real ClamAV (production)
- *   clamav-tcp     : a real ClamAV daemon reached directly over TCP (self-hosted)
- *   demo           : the embedded demo scanner. Local development and automated tests ONLY.
- *   none           : nothing is configured; documents are NOT scanned and are NOT analysed
+ *   clamav-service : an authenticated HTTPS ClamAV scanning service (scanner-service/, optional)
+ *   clamav-tcp     : a real ClamAV daemon reached directly over TCP (optional)
+ *   none           : no antivirus is configured. Only the built-in checks run (see ANTIVIRUS_POLICY).
+ *
+ * The behaviour is identical on Vercel Preview and Production: nothing here depends on VERCEL_ENV.
  */
-export type ScannerMode = 'clamav-service' | 'clamav-tcp' | 'demo' | 'none';
+export type ScannerMode = 'clamav-service' | 'clamav-tcp' | 'none';
 
 type Env = NodeJS.ProcessEnv;
 
-/** The demo scanner can never run on Vercel or in production, and only when it is switched on explicitly. */
-export function demoScannerAllowed(env: Env = process.env): boolean {
-  return env.ALLOW_DEMO_SCANNER === '1' && !env.VERCEL && env.NODE_ENV !== 'production';
-}
-
-/** Demo endpoints started in this process (host:port). A client cannot tell them apart from a real daemon otherwise. */
-const demoEndpoints = new Set<string>();
-export const registerDemoEndpoint = (host: string, port: number): void => void demoEndpoints.add(`${host}:${port}`);
-export const unregisterDemoEndpoint = (host: string, port: number): void => void demoEndpoints.delete(`${host}:${port}`);
-export const isDemoEndpoint = (host: string, port: number): boolean => demoEndpoints.has(`${host}:${port}`);
-
 export function scannerMode(env: Env = process.env): ScannerMode {
   if (env.CLAMAV_SCAN_URL) return 'clamav-service';
-  if (env.CLAMAV_HOST) {
-    const port = env.CLAMAV_PORT ? parseInt(env.CLAMAV_PORT, 10) : 3310;
-    return isDemoEndpoint(env.CLAMAV_HOST, port) ? 'demo' : 'clamav-tcp';
-  }
+  if (env.CLAMAV_HOST) return 'clamav-tcp';
   return 'none';
+}
+
+/**
+ * ANTIVIRUS_POLICY: "optional" (default) or "required". Any other value is treated as "required" (fail closed)
+ * instead of silently weakening the policy.
+ */
+export function antivirusPolicy(env: Env = process.env): AntivirusPolicy {
+  const raw = (env.ANTIVIRUS_POLICY ?? '').trim().toLowerCase();
+  if (raw === '' || raw === 'optional') return 'optional';
+  return 'required';
 }

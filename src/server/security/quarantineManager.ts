@@ -10,7 +10,12 @@ export const QUARANTINE_DIR = process.env.QUARANTINE_DIR
   : process.env.VERCEL
   ? path.join(os.tmpdir(), 'fineprint-quarantine')
   : path.resolve(process.cwd(), '.quarantine');
-export const RETENTION_PERIOD_MS = 2 * 60 * 60 * 1000; // 2 hours
+/**
+ * Documents are NOT retained. Each upload is deleted (file, metadata, registry entry and every cache) as soon as its
+ * request has finished, whether it succeeded or failed. This age limit is only a safety net for debris that a
+ * crashed or killed request could leave behind; it is swept at every upload and by a timer.
+ */
+export const ORPHAN_MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes
 
 export interface CleanupFailure {
   fileId: string;
@@ -62,87 +67,54 @@ export function initQuarantineStorage(): void {
 }
 
 /**
- * Startup reconciliation:
- * Scans quarantine storage on server boot to:
- * 1. Purge expired files (> 2 hours) across server restarts.
- * 2. Re-register non-expired documents and reports into memory.
- * 3. Detect and remove orphaned .quarantine files without metadata.
- * 4. Record any cleanup failures explicitly.
+ * Startup: nothing is restored. Any document left on disk by a previous run is deleted, because documents are only
+ * ever held for the duration of a single request.
  */
 export function reconcileQuarantineOnStartup(): { purged: number; restored: number; failed: number } {
   initQuarantineStorage();
-
   let purged = 0;
-  let restored = 0;
   let failed = 0;
-  const now = Date.now();
-
   try {
-    const files = fs.readdirSync(QUARANTINE_DIR);
-    const metaFiles = files.filter((f) => f.endsWith('.meta.json'));
-    const quarantineFiles = new Set(files.filter((f) => f.endsWith('.quarantine')));
-
-    for (const metaFileName of metaFiles) {
-      const fileId = metaFileName.replace('.meta.json', '');
-      const metaPath = path.join(QUARANTINE_DIR, metaFileName);
-      const quatPath = path.join(QUARANTINE_DIR, `${fileId}.quarantine`);
-
-      quarantineFiles.delete(`${fileId}.quarantine`);
-
+    for (const name of fs.readdirSync(QUARANTINE_DIR)) {
+      if (!name.endsWith('.quarantine') && !name.endsWith('.meta.json')) continue;
       try {
-        const raw = fs.readFileSync(metaPath, 'utf8');
-        const data = JSON.parse(raw);
-        const uploadedTime = new Date(data.metadata.uploadedAt).getTime();
-
-        if (now - uploadedTime > RETENTION_PERIOD_MS) {
-          // Expired file: purge
-          if (fs.existsSync(quatPath)) fs.unlinkSync(quatPath);
-          fs.unlinkSync(metaPath);
-          purged++;
-          notifyDocumentRemoved(fileId);
-        } else {
-          // Valid non-expired file: restore to registry
-          quarantineRegistry.set(fileId, {
-            metadata: data.metadata,
-            report: data.report,
-          });
-          restored++;
-        }
+        fs.unlinkSync(path.join(QUARANTINE_DIR, name));
+        purged++;
       } catch (err: any) {
         failed++;
-        const failure: CleanupFailure = {
-          fileId,
-          error: `Startup reconciliation failed for ${metaFileName}: ${err.message}`,
-          timestamp: new Date().toISOString(),
-        };
+        const failure: CleanupFailure = { fileId: name.split('.')[0], error: `Startup purge failed: ${err.message}`, timestamp: new Date().toISOString() };
         cleanupFailures.push(failure);
-        console.error('[QuarantineReconciliationError]', failure);
-      }
-    }
-
-    // Handle orphaned .quarantine files without metadata
-    for (const orphanName of quarantineFiles) {
-      const orphanPath = path.join(QUARANTINE_DIR, orphanName);
-      try {
-        const stat = fs.statSync(orphanPath);
-        if (now - stat.mtimeMs > RETENTION_PERIOD_MS) {
-          fs.unlinkSync(orphanPath);
-          purged++;
-        }
-      } catch (err: any) {
-        failed++;
-        cleanupFailures.push({
-          fileId: orphanName,
-          error: `Failed removing orphaned file: ${err.message}`,
-          timestamp: new Date().toISOString(),
-        });
+        console.error('[QuarantineStartupPurgeError]', failure);
       }
     }
   } catch (err: any) {
-    console.error('[QuarantineReconciliationFatal]', err);
+    console.error('[QuarantineStartupPurgeFatal]', err);
   }
+  return { purged, restored: 0, failed };
+}
 
-  return { purged, restored, failed };
+/** Deletes debris older than ORPHAN_MAX_AGE_MS (files left by a request that never finished). */
+export function sweepStaleFiles(now = Date.now()): number {
+  let removed = 0;
+  try {
+    for (const name of fs.readdirSync(QUARANTINE_DIR)) {
+      if (!name.endsWith('.quarantine') && !name.endsWith('.meta.json')) continue;
+      const full = path.join(QUARANTINE_DIR, name);
+      try {
+        if (now - fs.statSync(full).mtimeMs > ORPHAN_MAX_AGE_MS) {
+          fs.unlinkSync(full);
+          removed++;
+          const fileId = name.split('.')[0];
+          if (quarantineRegistry.has(fileId)) purgeDocumentRecord(fileId);
+        }
+      } catch (err: any) {
+        cleanupFailures.push({ fileId: name.split('.')[0], error: `Sweep failed: ${err.message}`, timestamp: new Date().toISOString() });
+      }
+    }
+  } catch {
+    // directory missing: nothing to sweep
+  }
+  return removed;
 }
 
 export function storeInQuarantine(
@@ -152,6 +124,7 @@ export function storeInQuarantine(
   sessionId: string
 ): { fileId: string; filePath: string; metadata: FileMetadata } {
   initQuarantineStorage();
+  sweepStaleFiles(); // opportunistic: serverless timers may never fire
 
   const fileId = crypto.randomUUID();
   const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
@@ -259,46 +232,23 @@ export function deleteQuarantinedFile(
   const filePath = path.join(QUARANTINE_DIR, `${fileId}.quarantine`);
   const metaPath = path.join(QUARANTINE_DIR, `${fileId}.meta.json`);
 
+  let failure: CleanupFailure | undefined;
   try {
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
-    if (fs.existsSync(metaPath)) {
-      fs.unlinkSync(metaPath);
-    }
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    if (fs.existsSync(metaPath)) fs.unlinkSync(metaPath);
   } catch (err: any) {
-    const failure: CleanupFailure = {
-      fileId,
-      error: `Filesystem deletion failed: ${err.message}`,
-      timestamp: new Date().toISOString(),
-    };
+    failure = { fileId, error: `Filesystem deletion failed: ${err.message}`, timestamp: new Date().toISOString() };
     cleanupFailures.push(failure);
-    return {
-      success: false,
-      authorized: true,
-      error: failure.error,
-    };
   }
 
+  // The in-memory registry entry and every cache (extraction, normalization, understanding) are cleared even if a
+  // file could not be unlinked; the sweeper removes any remaining file.
   quarantineRegistry.delete(fileId);
   notifyDocumentRemoved(fileId);
-  return { success: true, authorized: true };
+  return failure ? { success: false, authorized: true, error: failure.error } : { success: true, authorized: true };
 }
 
-// Periodic cleanup loop checking for expired files
+// Safety-net sweep for debris only (documents are normally deleted at the end of their own request)
 setInterval(() => {
-  const now = Date.now();
-  for (const [id, record] of quarantineRegistry.entries()) {
-    const uploadedTime = new Date(record.metadata.uploadedAt).getTime();
-    if (now - uploadedTime > RETENTION_PERIOD_MS) {
-      const del = deleteQuarantinedFile(id, record.metadata.sessionId);
-      if (!del.success && del.error) {
-        cleanupFailures.push({
-          fileId: id,
-          error: `Periodic cleanup failed: ${del.error}`,
-          timestamp: new Date().toISOString(),
-        });
-      }
-    }
-  }
-}, 15 * 60 * 1000).unref();
+  sweepStaleFiles();
+}, 5 * 60 * 1000).unref();
