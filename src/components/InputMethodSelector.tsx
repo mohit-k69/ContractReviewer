@@ -13,8 +13,8 @@ export const InputMethodSelector: React.FC<InputMethodSelectorProps> = ({
   onSelectMethod,
 }) => {
   return (
-    <div className="flex flex-col gap-3 w-full">
-      <span id="input-method-label" className="text-[15px] font-semibold text-gray-900 tracking-tight">
+    <div className="flex flex-col gap-3.5 w-full">
+      <span id="input-method-label" className="text-balance text-center text-[19px] font-semibold leading-snug text-gray-900 tracking-tight">
         How would you like to add your contract?
       </span>
       <div

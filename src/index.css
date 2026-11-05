@@ -1,1 +1,12 @@
 @import "tailwindcss";
+
+/* Gentle idle motion for the empty-state illustration (off for people who prefer reduced motion) */
+@keyframes float-soft {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+.float-soft { animation: float-soft 5s ease-in-out infinite; }
+.float-soft-late { animation: float-soft 5s ease-in-out -2.2s infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .float-soft, .float-soft-late { animation: none; }
+}

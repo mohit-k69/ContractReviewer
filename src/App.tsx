@@ -9,6 +9,7 @@ import { ContractInput } from './components/ContractInput';
 import { InputMethodSelector, InputMethod } from './components/InputMethodSelector';
 import { ContractFileUpload, UploadedContractFile } from './components/ContractFileUpload';
 import { ContractReview } from './components/review/ContractReview';
+import { EmptyReviewState } from './components/EmptyReviewState';
 import { DEFAULT_CONTRACT_TYPE_ID } from './utils/contractTypes';
 
 export default function App() {
@@ -43,7 +44,7 @@ export default function App() {
             decisionReport ? '' : 'min-h-[calc(100svh-3rem)] sm:min-h-[calc(100svh-4rem)] lg:min-h-0'
           }`}
         >
-          <div className="mx-auto flex w-full max-w-[22rem] flex-col gap-8">
+          <div className="mx-auto flex w-full max-w-[22rem] flex-col gap-9">
             {/* Once a review is shown, the selectors step aside on small screens so the agreement name comes first. */}
             <div className={decisionReport ? 'hidden lg:block' : ''}>
               <ContractTypeSelector value={contractType} onChange={setContractType} />
@@ -70,6 +71,13 @@ export default function App() {
             </div>
           </div>
         </main>
+
+        {/* Until there is a review, the right side invites the user to add a contract (large screens only) */}
+        {!decisionReport && (
+          <section aria-label="Review preview" className="hidden min-w-0 flex-1 items-center justify-center lg:flex lg:h-[calc(100svh-5rem)]">
+            <EmptyReviewState busy={Boolean(selectedFile?.isScanning)} />
+          </section>
+        )}
 
         {/* The Contract Decision Report (the only result shown) */}
         {decisionReport && (

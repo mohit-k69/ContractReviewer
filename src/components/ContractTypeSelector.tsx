@@ -14,10 +14,10 @@ export const ContractTypeSelector: React.FC<ContractTypeSelectorProps> = ({
   options = CONTRACT_TYPES,
 }) => {
   return (
-    <div className="flex flex-col gap-3 w-full">
+    <div className="flex flex-col gap-3.5 w-full">
       <label
         htmlFor="contract-type-select"
-        className="text-[15px] font-semibold text-gray-900 tracking-tight"
+        className="text-balance text-center text-[19px] font-semibold leading-snug text-gray-900 tracking-tight"
       >
         Type of contract
       </label>
@@ -26,7 +26,7 @@ export const ContractTypeSelector: React.FC<ContractTypeSelectorProps> = ({
           id="contract-type-select"
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className="h-11 w-full appearance-none rounded-xl border border-gray-200 bg-white pl-3.5 pr-10 text-[12.5px] text-gray-800 transition-colors hover:border-gray-300 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100 cursor-pointer"
+          className="h-11 w-full appearance-none rounded-xl border border-gray-200 bg-white pl-9 pr-9 text-center text-[12px] text-gray-800 [text-align-last:center] transition-colors hover:border-gray-300 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100 cursor-pointer"
         >
           {options.map((option) => (
             <option key={option.id} value={option.id}>
