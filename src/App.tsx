@@ -8,7 +8,7 @@ import { ContractTypeSelector } from './components/ContractTypeSelector';
 import { ContractInput } from './components/ContractInput';
 import { InputMethodSelector, InputMethod } from './components/InputMethodSelector';
 import { ContractFileUpload, UploadedContractFile } from './components/ContractFileUpload';
-import { DecisionReportView } from './components/DecisionReportView';
+import { ContractReview } from './components/review/ContractReview';
 import { DEFAULT_CONTRACT_TYPE_ID } from './utils/contractTypes';
 
 export default function App() {
@@ -38,17 +38,12 @@ export default function App() {
       >
         {/* Main controls column positioned on left side */}
         <main className="w-full lg:w-[380px] lg:shrink-0 flex flex-col gap-4">
-          {/* 1. Contract Type Selector */}
-          <ContractTypeSelector
-            value={contractType}
-            onChange={setContractType}
-          />
-
-          {/* 2. Contract Input Method Selection */}
-          <InputMethodSelector
-            selectedMethod={inputMethod}
-            onSelectMethod={setInputMethod}
-          />
+          {/* 1 + 2. Contract type and input method. Once a review is shown they step aside on small screens, so the
+              agreement name is the first thing a phone user sees. */}
+          <div className={`flex flex-col gap-4 ${decisionReport ? 'hidden lg:flex' : ''}`}>
+            <ContractTypeSelector value={contractType} onChange={setContractType} />
+            <InputMethodSelector selectedMethod={inputMethod} onSelectMethod={setInputMethod} />
+          </div>
 
           {/* 3. Conditional Input Area (Paste Text or File Upload) */}
           {inputMethod === 'paste' && (
@@ -72,7 +67,7 @@ export default function App() {
         {/* The Contract Decision Report (the only result shown) */}
         {decisionReport && (
           <section className="w-full flex-1 min-w-0" aria-label="Contract review report">
-            <DecisionReportView report={decisionReport} />
+            <ContractReview key={decisionReport.generated_at} report={decisionReport} fileName={selectedFile?.name} />
           </section>
         )}
       </div>

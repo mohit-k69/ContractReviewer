@@ -14,10 +14,14 @@ paste / upload ─► security inspection ─► extraction ─► normalization
 ```
 
 **What the user sees.** One upload request runs everything in the background (the security checks are not shown) while
-the screen says "Reviewing your contract". The result is the **Contract Decision Report** (`analysis.decisionReport`,
-rendered by `src/components/DecisionReportView.tsx`) in five sections: *Understand Your Deal*, *Your Commitments*,
-*What Deserves Your Attention?*, *What If Something Happens?* and *Your Rights and Next Steps*. Exact contract quotations
-and their section references are one click away; there is no numerical score. A rejected file gets one short message.
+the screen says "Reviewing your contract". The result is a short, three-page review built from the **Contract Decision
+Report** (`analysis.decisionReport`, presented by `src/components/review/` using the selection rules in
+`src/utils/reviewPresentation.ts`): **Contract Overview** (the agreement name, the 3-5 findings that matter most, key
+terms), **Understand Your Agreement** (seven topics, with the exact wording one click away) and **Before You Sign**
+(what to negotiate, questions, a checklist, things to monitor). One page is shown at a time; pages turn with the arrow
+buttons, the arrow keys or a swipe. The complete report stays in application state; the pages only choose what to show,
+and an extracted value that is cut off or about something else is left out rather than shown. There is no numerical
+score. A rejected file gets one short message.
 
 * **Phase 3 – review report** (`src/server/risk/`): a deterministic, explainable rule engine turns the verified
   understanding into findings across payment, scope, termination, IP, liability & indemnification, confidentiality,
