@@ -355,7 +355,7 @@ test('17. Harmless EICAR antivirus test signature is caught as THREAT_DETECTED',
   }
 });
 
-test('18. Prompt injection directives in text are flagged as SUSPICIOUS', async () => {
+test('18. Prompt-injection wording is flagged for the record but never blocks a document', async () => {
   const mockAV = await startMockClamAVServer('clean');
   try {
     const injectionText = Buffer.from(
@@ -366,9 +366,10 @@ test('18. Prompt injection directives in text are flagged as SUSPICIOUS', async 
       clamavPort: mockAV.port,
     });
 
-    assert.equal(report.status, 'SUSPICIOUS');
-    assert.equal(report.promptInjection.passed, false);
-    assert.equal(report.eligibleForContractProcessing, false);
+    assert.equal(report.promptInjection.passed, false, 'the finding is recorded');
+    assert.ok(report.promptInjection.flaggedPatterns.length > 0);
+    assert.equal(report.status, 'CLEAN_NO_KNOWN_THREATS');
+    assert.equal(report.eligibleForContractProcessing, true);
   } finally {
     await mockAV.close();
   }

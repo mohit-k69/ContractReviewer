@@ -460,7 +460,7 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
                 <div className="flex items-center justify-between">
                   <span>Prompt Injection Defense:</span>
                   <span className={report.promptInjection.passed ? 'text-emerald-600 font-medium' : 'text-amber-600 font-semibold'}>
-                    {report.promptInjection.passed ? 'Clean' : 'Suspicious'}
+                    {report.promptInjection.passed ? 'Nothing flagged' : 'Flagged (advisory, not blocked)'}
                   </span>
                 </div>
               </div>

@@ -7,6 +7,34 @@ export const MAX_SINGLE_ENTRY_DECOMPRESSED_BYTES = 15 * 1024 * 1024; // 15 MB pe
 export const MAX_DECOMPRESSION_RATIO = 15; // Max 15x compression ratio
 export const MAX_ZIP_ENTRY_COUNT = 300; // Standard docx has ~15-40 entries
 
+/** A ZIP entry name that could escape its folder: a ".." path segment, an absolute path, a drive letter or a NUL. */
+export function isUnsafeEntryName(name: string): boolean {
+  if (name.includes('\0')) return true;
+  const normalised = name.replace(/\\/g, '/');
+  if (normalised.startsWith('/') || /^[a-zA-Z]:/.test(normalised)) return true;
+  return normalised.split('/').some((segment) => segment === '..');
+}
+
+/**
+ * Names stored in the ZIP LOCAL file headers. Archive readers use the central directory, but a hostile archive can
+ * put a different (traversing) name in the local header, so both are checked. Bounded to plausible header fields so
+ * that bytes inside compressed data cannot produce false matches.
+ */
+function localHeaderNames(buffer: Buffer): string[] {
+  const names: string[] = [];
+  let at = buffer.indexOf(Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+  while (at !== -1 && names.length < 10000) {
+    if (at + 30 <= buffer.length) {
+      const length = buffer.readUInt16LE(at + 26);
+      if (length > 0 && length <= 1024 && at + 30 + length <= buffer.length) {
+        names.push(buffer.toString('latin1', at + 30, at + 30 + length));
+      }
+    }
+    at = buffer.indexOf(Buffer.from([0x50, 0x4b, 0x03, 0x04]), at + 4);
+  }
+  return names;
+}
+
 export function inspectDocumentStructure(
   buffer: Buffer,
   format: 'pdf' | 'docx' | 'txt' | 'unknown'
@@ -73,11 +101,13 @@ export function inspectDocumentStructure(
   if (format === 'docx') {
     // Hardened DOCX ZIP package inspection
     try {
-      // 1. Raw buffer scan for path traversal before parsing
-      const rawZipStr = buffer.toString('latin1');
-      if (rawZipStr.includes('../') || rawZipStr.includes('..\\')) {
-        pathTraversalAttempts.push('relative-traversal-sequence');
-        details.push('Path traversal attempt detected in raw ZIP headers (../ or ..\\).');
+      // 1. Path traversal in the local file headers (checked as whole path segments, never as a substring of
+      //    compressed bytes: "../" legitimately appears in relationship targets such as ../customXml/item1.xml)
+      for (const name of localHeaderNames(buffer)) {
+        if (isUnsafeEntryName(name)) {
+          pathTraversalAttempts.push(name);
+          details.push(`Path traversal attempt detected in ZIP local header: ${name}`);
+        }
       }
 
       const zip = new AdmZip(buffer);
@@ -111,13 +141,8 @@ export function inspectDocumentStructure(
       for (const entry of entries) {
         const name = entry.entryName;
 
-        // Path traversal checks on parsed name
-        if (
-          name.includes('..') ||
-          name.startsWith('/') ||
-          name.startsWith('\\') ||
-          name.includes('\0')
-        ) {
+        // Path traversal checks on the central-directory name
+        if (isUnsafeEntryName(name)) {
           if (!pathTraversalAttempts.includes(name)) {
             pathTraversalAttempts.push(name);
             details.push(`Path traversal attempt detected in entry: ${name}`);

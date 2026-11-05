@@ -1,4 +1,5 @@
 import { AuthenticityInspectionResult } from './types';
+import { findPdfDangers } from './activeContentInspector';
 
 // Common executable extensions used in disguised double extensions
 const DANGEROUS_EXTENSIONS = new Set([
@@ -59,15 +60,13 @@ export function inspectFileAuthenticity(
     magic4[2] === 0x03 &&
     magic4[3] === 0x04;
 
-  // Check for executable binary signatures disguised as documents
+  // Executable binaries disguised as documents (signatures: Windows PE "MZ", ELF, Java class / Mach-O fat, Mach-O)
+  const hex4 = magic4.toString('hex');
   const isWindowsExecutable = magic4[0] === 0x4d && magic4[1] === 0x5a; // MZ
-  const isElfExecutable =
-    magic4[0] === 0x7f &&
-    magic4[1] === 0x45 &&
-    magic4[2] === 0x4c &&
-    magic4[3] === 0x46; // \x7fELF
+  const isElfExecutable = hex4 === '7f454c46'; // \x7fELF
+  const isOtherExecutable = ['cafebabe', 'cafebabf', 'feedface', 'feedfacf', 'cefaedfe', 'cffaedfe', 'bebafeca', 'bfbafeca'].includes(hex4);
 
-  if (isWindowsExecutable || isElfExecutable) {
+  if (isWindowsExecutable || isElfExecutable || isOtherExecutable) {
     details.push('Executable binary magic signature detected in document header.');
     return {
       passed: false,
@@ -94,7 +93,7 @@ export function inspectFileAuthenticity(
     // Check for password protection / encryption in PDF
     // Look for /Encrypt dictionary
     const pdfContentSample = buffer.toString('latin1');
-    if (pdfContentSample.includes('/Encrypt')) {
+    if (findPdfDangers(pdfContentSample).encrypted) {
       passwordProtected = true;
       details.push('PDF document is encrypted or password-protected and cannot be securely inspected.');
     }

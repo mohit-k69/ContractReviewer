@@ -64,16 +64,30 @@ paste it, or upload it.
 
 ### Security checks and what they mean
 
-Every upload goes through these built-in checks, with or without an antivirus: file authenticity and MIME type, PDF/DOCX
-structure (ZIP bombs, path traversal), active content (JavaScript, macros, launch actions, embedded files, OLE),
-known-malicious-pattern signatures, and prompt-injection detection; plus session authentication, CSRF protection,
-SHA-256 integrity and upload size / concurrency / timeout limits.
+This is a deliberately simple protective layer for a contract-review app, **not an antivirus**. Every upload goes through
+these built-in checks, with or without an antivirus:
+
+* **Only PDF, DOCX and TXT** are accepted, and the real file signature must match the extension (executables such as
+  PE/ELF/Mach-O disguised as documents are rejected). The existing 20 MB size limit applies.
+* **Corrupted or malformed** documents are rejected (broken PDF structure, broken or incomplete DOCX package, binary "text").
+* **Dangerous content** is rejected. In a PDF: JavaScript, `/Launch` actions, embedded file attachments, encryption (cannot
+  be inspected). In a DOCX: macros, ActiveX/OLE objects, embedded executables or scripts, and exploit-style external
+  relationships. These are recognised from the PDF/OOXML structure, not from arbitrary text, so font names, ordinary URLs and
+  normal legal wording never trigger them.
+* **Malicious archive structure** in a DOCX: path traversal, excessive decompression, too many entries.
+* A small list of **known malicious signatures** (for example the EICAR test string).
+* **Prompt-injection wording is advisory**: it is recorded in the report but never blocks a contract. The contract text is
+  always passed to the AI as untrusted data.
+* Uploaded files are only ever read as bytes. Nothing in an upload is executed, and nothing is written outside the
+  temporary quarantine, which is deleted at the end of every request.
+
+Plus session authentication, CSRF protection, SHA-256 integrity and upload size / concurrency / timeout limits.
 
 | Result (`status`) | Meaning |
 | --- | --- |
 | `CLEAN_NO_KNOWN_THREATS` | A **genuine** ClamAV scan completed and found nothing (`malware.genuine: true`). |
 | `BASIC_CHECKS_PASSED_NO_ANTIVIRUS` | All built-in checks passed. **Full antivirus scanning was not performed** (`malware.genuine: false`). This is *not* a malware-free result. |
-| `THREAT_DETECTED` / `SUSPICIOUS` / `REJECTED` | Blocked by a built-in check (or ClamAV). Nothing is analysed. |
+| `THREAT_DETECTED` / `REJECTED` | Blocked by a built-in check (or ClamAV). Nothing is analysed. |
 | `SCAN_FAILED` / `UNAVAILABLE` | A configured antivirus failed, or one is required and missing. Nothing is analysed (fail-closed). |
 
 Basic checks do not detect real malware that has no known signature and no active-content markers. For sensitive

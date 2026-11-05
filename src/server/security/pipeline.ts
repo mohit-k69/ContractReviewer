@@ -33,7 +33,7 @@ export interface PipelineOptions {
  *   authenticity/MIME -> structure (ZIP bomb, traversal) -> active content (JS, macros, embedded files)
  *   -> built-in known-threat signatures -> prompt-injection -> OPTIONAL antivirus (ClamAV)
  *
- * The built-in checks and prompt-injection always run, with or without an antivirus. The document is held in the
+ * The built-in checks and the (advisory, non-blocking) prompt-injection check always run, with or without an antivirus. The document is held in the
  * quarantine only while this request is being processed: the caller deletes it afterwards, and this function deletes
  * it itself if inspection throws.
  */
@@ -298,12 +298,11 @@ async function inspect(
     return finish('THREAT_DETECTED', `Malicious signature detected: ${known.threatsFound.join(', ')}`, builtInMalwareResult(known), skippedPromptInjection, false);
   }
 
-  // 6. Prompt-injection inspection. Always runs; independent of any antivirus service.
+  // 6. Prompt-injection inspection. Always runs, but it is ADVISORY: wording such as "ignore", "instructions" or
+  //    "system" is ordinary in contracts, so it never blocks a document. The finding is recorded in the report, and
+  //    the document text is always passed to the AI as untrusted data (see promptBuilder).
   const promptInjection = inspectPromptInjection(buffer, authenticity.detectedFormat);
   const builtIn = builtInMalwareResult(known);
-  if (!promptInjection.passed) {
-    return finish('SUSPICIOUS', 'Suspicious AI prompt override directives detected inside document text.', builtIn, promptInjection, false);
-  }
 
   // 7. OPTIONAL antivirus. If one is configured it is enforced and fails closed; if none is configured, the policy decides.
   const av = await scanForMalware(buffer, options);
