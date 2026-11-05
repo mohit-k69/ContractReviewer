@@ -158,7 +158,7 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
       />
 
       {isReviewing ? (
-        <div role="status" aria-live="polite" className="flex items-center gap-3 rounded-[16px] border border-[#E5E7EB] bg-[#FAFAFA] p-4">
+        <div role="status" aria-live="polite" className="flex items-center gap-3.5 rounded-xl border border-gray-200 bg-white p-4">
           <Loader2 className="w-5 h-5 text-blue-600 animate-spin shrink-0" aria-hidden="true" />
           <div className="min-w-0">
             <p className="text-sm font-medium text-gray-900">Reviewing your contract</p>
@@ -166,20 +166,28 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
           </div>
         </div>
       ) : selectedFile?.decisionReport ? (
-        <div className="flex items-center justify-between gap-3 rounded-[16px] border border-[#E5E7EB] bg-[#FAFAFA] p-3.5">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <FileText className="w-4 h-4 text-gray-500 shrink-0" aria-hidden="true" />
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-gray-900 truncate" title={selectedFile.name}>{selectedFile.name}</p>
-              <p className="text-xs text-gray-500">{formatFileSize(selectedFile.size)}</p>
+        <div className="rounded-xl border border-gray-200 bg-white p-4">
+          <div className="flex items-start gap-3.5">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gray-50 text-gray-500" aria-hidden="true">
+              <FileText className="h-5 w-5" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="break-words text-sm font-medium leading-snug text-gray-900 line-clamp-2" title={selectedFile.name}>{selectedFile.name}</p>
+              <p className="mt-0.5 text-xs text-gray-500">{formatFileSize(selectedFile.size)}</p>
             </div>
           </div>
-          <div className="flex items-center gap-3 shrink-0">
-            <button type="button" onClick={handleBrowseClick} className="text-xs text-blue-700 hover:text-blue-800 hover:underline cursor-pointer">
+          <div className="mt-3.5 flex items-center gap-5 border-t border-gray-100 pt-3 text-[13px]">
+            <button type="button" onClick={handleBrowseClick} className="cursor-pointer font-medium text-blue-700 hover:text-blue-800 hover:underline underline-offset-2">
               Review another
             </button>
-            <button type="button" onClick={handleRemoveFile} title="Clear" aria-label="Clear the review" className="p-1 text-gray-400 hover:text-gray-600 rounded-md cursor-pointer">
-              <X className="w-4 h-4" />
+            <button
+              type="button"
+              onClick={handleRemoveFile}
+              aria-label={`Remove ${selectedFile.name}`}
+              className="inline-flex cursor-pointer items-center gap-1 text-gray-500 hover:text-red-700"
+            >
+              <X className="h-3.5 w-3.5" aria-hidden="true" />
+              Remove
             </button>
           </div>
         </div>
@@ -197,18 +205,18 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
-          className={`flex flex-col items-center justify-center gap-2 rounded-[16px] border-2 border-dashed px-4 py-8 text-center cursor-pointer transition-colors ${
-            isDragging ? 'border-blue-400 bg-blue-50' : 'border-[#D1D5DB] bg-[#FAFAFA] hover:border-blue-300 hover:bg-white'
+          className={`flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed px-5 py-9 text-center cursor-pointer outline-none transition-colors focus-visible:ring-2 focus-visible:ring-blue-300 ${
+            isDragging ? 'border-blue-400 bg-blue-50' : 'border-gray-300 bg-white hover:border-blue-300 hover:bg-gray-50'
           }`}
         >
           <UploadCloud className="w-7 h-7 text-gray-400" aria-hidden="true" />
-          <p className="text-sm font-medium text-gray-900">Drop your contract here, or click to choose a file</p>
+          <p className="text-[13px] font-medium text-gray-900">Drop your contract here, or click to choose a file</p>
           <p className="text-xs text-gray-500">PDF, DOCX or TXT · up to {MAX_FILE_SIZE_MB} MB</p>
         </div>
       )}
 
       {errorMessage && (
-        <div role="alert" className="flex items-start gap-2 rounded-[12px] border border-red-200 bg-red-50 px-3.5 py-3 text-sm text-red-800">
+        <div role="alert" className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-3.5 py-3 text-sm text-red-800">
           <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" aria-hidden="true" />
           <span>{errorMessage}</span>
         </div>

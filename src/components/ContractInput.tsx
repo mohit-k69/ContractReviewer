@@ -24,7 +24,7 @@ export const ContractInput: React.FC<ContractInputProps> = ({
   const canSubmit = Boolean(onSubmit) && !tooShort && !tooLarge;
 
   return (
-    <div className="w-full flex-1 flex flex-col gap-2">
+    <div className="w-full flex-1 flex flex-col gap-3">
       <label htmlFor="contract-text-input" className="sr-only">
         Contract Text
       </label>
@@ -33,7 +33,7 @@ export const ContractInput: React.FC<ContractInputProps> = ({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full flex-1 min-h-[360px] rounded-[14px] border border-[#E5E7EB] bg-[#FAFAFA] p-3.5 text-sm text-gray-900 placeholder:text-gray-400 transition-colors focus:border-blue-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 resize-y overflow-y-auto leading-relaxed"
+        className="w-full flex-1 min-h-[180px] h-[34vh] max-h-[340px] rounded-xl border border-gray-200 bg-white p-3.5 text-sm text-gray-900 placeholder:text-gray-400 transition-colors focus:border-blue-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 resize-y overflow-y-auto leading-relaxed"
       />
       {onSubmit && (
         <>

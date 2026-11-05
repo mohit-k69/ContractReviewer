@@ -36,32 +36,39 @@ export default function App() {
           decisionReport ? 'max-w-7xl mx-auto' : ''
         }`}
       >
-        {/* Main controls column positioned on left side */}
-        <main className="w-full lg:w-[380px] lg:shrink-0 flex flex-col gap-4">
-          {/* 1 + 2. Contract type and input method. Once a review is shown they step aside on small screens, so the
-              agreement name is the first thing a phone user sees. */}
-          <div className={`flex flex-col gap-4 ${decisionReport ? 'hidden lg:flex' : ''}`}>
-            <ContractTypeSelector value={contractType} onChange={setContractType} />
-            <InputMethodSelector selectedMethod={inputMethod} onSelectMethod={setInputMethod} />
+        {/* Left panel. The whole form group is centred in the available height (and horizontally within the panel);
+            beside a report on large screens it stays centred in the viewport while the report scrolls. */}
+        <main
+          className={`w-full lg:w-[420px] lg:shrink-0 flex flex-col justify-center lg:sticky lg:top-10 lg:h-[calc(100svh-5rem)] ${
+            decisionReport ? '' : 'min-h-[calc(100svh-3rem)] sm:min-h-[calc(100svh-4rem)] lg:min-h-0'
+          }`}
+        >
+          <div className="mx-auto flex w-full max-w-[22rem] flex-col gap-8">
+            {/* Once a review is shown, the selectors step aside on small screens so the agreement name comes first. */}
+            <div className={decisionReport ? 'hidden lg:block' : ''}>
+              <ContractTypeSelector value={contractType} onChange={setContractType} />
+            </div>
+
+            <div className="flex flex-col gap-6">
+              <div className={decisionReport ? 'hidden lg:block' : ''}>
+                <InputMethodSelector selectedMethod={inputMethod} onSelectMethod={setInputMethod} />
+              </div>
+
+              {/* Paste text or file upload */}
+              {inputMethod === 'paste' && (
+                <ContractInput value={contractText} onChange={setContractText} onSubmit={handlePasteSubmit} />
+              )}
+
+              {inputMethod === 'upload' && (
+                <ContractFileUpload
+                  selectedFile={selectedFile}
+                  onFileSelect={setSelectedFile}
+                  autoStartFile={pastedFile}
+                  onAutoStartConsumed={() => setPastedFile(null)}
+                />
+              )}
+            </div>
           </div>
-
-          {/* 3. Conditional Input Area (Paste Text or File Upload) */}
-          {inputMethod === 'paste' && (
-            <ContractInput
-              value={contractText}
-              onChange={setContractText}
-              onSubmit={handlePasteSubmit}
-            />
-          )}
-
-          {inputMethod === 'upload' && (
-            <ContractFileUpload
-              selectedFile={selectedFile}
-              onFileSelect={setSelectedFile}
-              autoStartFile={pastedFile}
-              onAutoStartConsumed={() => setPastedFile(null)}
-            />
-          )}
         </main>
 
         {/* The Contract Decision Report (the only result shown) */}
