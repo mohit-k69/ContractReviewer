@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import fs from 'node:fs';
@@ -146,6 +146,105 @@ test('Quarantine: the safety-net sweep removes only debris older than the orphan
   assert.equal(fs.existsSync(filePath), false);
   assert.equal(fs.existsSync(metaPath), false);
   assert.equal(hasDocumentRecord(fileId), false, 'the in-memory record is gone too');
+});
+
+// 2b. storeInQuarantine is atomic from a cleanup perspective
+const quarantineLeftovers = (): string[] =>
+  fs.readdirSync(QUARANTINE_DIR).filter((f) => f.endsWith('.quarantine') || f.endsWith('.meta.json'));
+
+/** Makes fs.writeFileSync fail for files matching `failOn`, after delegating earlier writes to the real function. */
+function failWritesTo(failOn: RegExp, error: Error) {
+  const real = fs.writeFileSync;
+  const written: string[] = [];
+  const spy = mock.method(fs, 'writeFileSync', (file: any, ...rest: any[]) => {
+    written.push(String(file));
+    if (failOn.test(String(file))) throw error;
+    return (real as any)(file, ...rest);
+  });
+  return { spy, written, restore: () => spy.mock.restore() };
+}
+
+test('storeInQuarantine: a metadata-write failure removes the already-written upload, leaves no registry entry, and rethrows the original error', () => {
+  const before = quarantineLeftovers();
+  const original = new Error('ENOSPC: no space left on device (simulated metadata write)');
+  const sim = failWritesTo(/\.meta\.json$/, original);
+  let thrown: unknown;
+  try {
+    storeInQuarantine(Buffer.from('contract that must not be left behind'), 'c.txt', 'text/plain', 'atomic-sess-1');
+  } catch (err) {
+    thrown = err;
+  } finally {
+    sim.restore();
+  }
+
+  assert.equal(thrown, original, 'the ORIGINAL error is rethrown, not a cleanup error');
+  // The payload really had been written before the metadata write failed
+  assert.equal(sim.written.length, 2);
+  assert.match(sim.written[0], /\.quarantine$/);
+  assert.match(sim.written[1], /\.meta\.json$/);
+  const fileId = path.basename(sim.written[0]).replace('.quarantine', '');
+
+  assert.equal(fs.existsSync(path.join(QUARANTINE_DIR, `${fileId}.quarantine`)), false, 'no quarantine file remains');
+  assert.equal(fs.existsSync(path.join(QUARANTINE_DIR, `${fileId}.meta.json`)), false, 'no metadata file remains');
+  assert.equal(hasDocumentRecord(fileId), false, 'no registry entry remains');
+  assert.deepEqual(quarantineLeftovers().filter((f) => !before.includes(f)), [], 'nothing new on disk at all');
+});
+
+test('storeInQuarantine: a failing upload write (possibly partial) leaves nothing behind', () => {
+  const before = quarantineLeftovers();
+  const original = new Error('EIO: simulated payload write failure');
+  const real = fs.writeFileSync;
+  // Simulate a PARTIAL write: some bytes reach the disk, then the write fails
+  const spy = mock.method(fs, 'writeFileSync', (file: any, data: any, ...rest: any[]) => {
+    if (/\.quarantine$/.test(String(file))) {
+      (real as any)(file, 'partial', ...rest);
+      throw original;
+    }
+    return (real as any)(file, data, ...rest);
+  });
+  try {
+    assert.throws(() => storeInQuarantine(Buffer.from('another contract'), 'c.txt', 'text/plain', 'atomic-sess-2'), (e) => e === original);
+  } finally {
+    spy.mock.restore();
+  }
+  assert.deepEqual(quarantineLeftovers().filter((f) => !before.includes(f)), []);
+});
+
+test('storeInQuarantine: if the cleanup itself fails, the original error is still the one thrown and the failure is recorded', () => {
+  const before = quarantineLeftovers();
+  const failuresBefore = getCleanupFailures().length;
+  const original = new Error('simulated metadata write failure');
+  const sim = failWritesTo(/\.meta\.json$/, original);
+  const realRm = fs.rmSync;
+  const rm = mock.method(fs, 'rmSync', () => {
+    throw new Error('EBUSY: simulated cleanup failure');
+  });
+  try {
+    assert.throws(() => storeInQuarantine(Buffer.from('stuck contract'), 'c.txt', 'text/plain', 'atomic-sess-3'), (e) => e === original);
+  } finally {
+    rm.mock.restore();
+    sim.restore();
+  }
+  const fileId = path.basename(sim.written[0]).replace('.quarantine', '');
+  assert.equal(hasDocumentRecord(fileId), false, 'the registry entry is removed even when file cleanup fails');
+  assert.ok(getCleanupFailures().length > failuresBefore, 'the cleanup failure is recorded for the sweeper');
+  // The stuck file is what the safety-net sweep exists for
+  assert.ok(sweepStaleFiles(Date.now() + ORPHAN_MAX_AGE_MS + 60_000) >= 1);
+  assert.deepEqual(quarantineLeftovers().filter((f) => !before.includes(f)), []);
+  void realRm;
+});
+
+test('storeInQuarantine: the normal path is unchanged (payload, metadata and registry entry all exist)', async () => {
+  const { fileId, filePath } = storeInQuarantine(Buffer.from('normal contract'), 'ok.txt', 'text/plain', 'atomic-sess-4');
+  try {
+    assert.ok(fs.existsSync(filePath));
+    assert.ok(fs.existsSync(path.join(QUARANTINE_DIR, `${fileId}.meta.json`)));
+    assert.equal(hasDocumentRecord(fileId), true);
+  } finally {
+    const { deleteQuarantinedFile } = await import('./quarantineManager');
+    assert.equal(deleteQuarantinedFile(fileId, 'atomic-sess-4').success, true);
+  }
+  assert.equal(hasDocumentRecord(fileId), false);
 });
 
 // 3. CSRF / Origin protection

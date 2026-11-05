@@ -133,9 +133,6 @@ export function storeInQuarantine(
   const filePath = path.join(QUARANTINE_DIR, safeFilename);
   const metaPath = path.join(QUARANTINE_DIR, metaFilename);
 
-  // Write isolated file with strict non-executable permissions (0600)
-  fs.writeFileSync(filePath, buffer, { mode: 0o600 });
-
   const metadata: FileMetadata = {
     fileId,
     originalName: path.basename(originalFilename),
@@ -147,10 +144,29 @@ export function storeInQuarantine(
     uploadedAt: new Date().toISOString(),
   };
 
-  // Persist metadata to disk so it survives restarts
-  fs.writeFileSync(metaPath, JSON.stringify({ metadata }), { mode: 0o600 });
-
-  quarantineRegistry.set(fileId, { metadata });
+  // Atomic from a cleanup perspective: either the payload, its metadata AND the registry entry all exist, or none
+  // of them do. A failure at any step removes whatever was already created, then rethrows the original error.
+  try {
+    // Write isolated file with strict non-executable permissions (0600)
+    fs.writeFileSync(filePath, buffer, { mode: 0o600 });
+    fs.writeFileSync(metaPath, JSON.stringify({ metadata }), { mode: 0o600 });
+    quarantineRegistry.set(fileId, { metadata });
+  } catch (err) {
+    for (const leftover of [filePath, metaPath]) {
+      try {
+        fs.rmSync(leftover, { force: true });
+      } catch (cleanupErr: any) {
+        // Best effort only: record it, and the safety-net sweep will retry. The original error is what is rethrown.
+        cleanupFailures.push({
+          fileId,
+          error: `Cleanup after a failed store could not remove ${path.basename(leftover)}: ${cleanupErr?.message ?? 'unknown error'}`,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
+    quarantineRegistry.delete(fileId);
+    throw err;
+  }
 
   return { fileId, filePath, metadata };
 }
