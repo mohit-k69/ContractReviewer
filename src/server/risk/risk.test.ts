@@ -341,8 +341,10 @@ test.describe('Phase 3 — evidence verification', () => {
 
   test('10. Missing provisions never carry evidence and say so explicitly', () => {
     const report = analyzeContractRisk(baseUnderstanding());
-    const missingFindings = report.findings.filter((f) => f.kind === 'MISSING_PROVISION');
+    // Material findings and informational observations are both absences: neither may carry evidence
+    const missingFindings = [...report.findings, ...report.observations].filter((f) => f.kind === 'MISSING_PROVISION');
     assert.ok(missingFindings.length >= 8);
+    assert.ok(report.findings.filter((f) => f.kind === 'MISSING_PROVISION').length >= 2, 'core terms (fee, scope) are still material');
     for (const f of missingFindings) {
       assert.deepEqual(f.evidence, [], `${f.id} must have no evidence`);
       assert.match(f.evidence_note!, /No clause was found/);
@@ -373,8 +375,24 @@ test.describe('Phase 3 — missing provisions', () => {
     const report = analyzeContractRisk(baseUnderstanding());
     assert.equal(byId(report.findings, 'payment.no_fee')?.severity, 'High');
     assert.equal(byId(report.findings, 'scope.no_scope')?.severity, 'High');
-    assert.equal(byId(report.findings, 'liability.no_cap')?.kind, 'MISSING_PROVISION');
-    assert.equal(byId(report.findings, 'dispute.no_governing_law')?.severity, 'Medium');
+    // In a contract with no liability exposure or dispute context, these absences are observations, not risks
+    for (const id of ['liability.no_cap', 'dispute.no_governing_law']) {
+      assert.equal(byId(report.findings, id), undefined, `${id} is not a material finding without context`);
+      const obs = byId(report.observations, id)!;
+      assert.equal(obs.kind, 'MISSING_PROVISION');
+      assert.equal(obs.severity, 'Low');
+      assert.equal(obs.relevance!.material, false);
+    }
+    // ...and they become material findings once the contract makes them relevant
+    const withContext = baseUnderstanding();
+    withContext.key_provisions.indemnification.contractor_indemnification = found(
+      'Contractor shall indemnify Company against all claims.',
+      verified('ind', 'b-ind', 'Contractor shall indemnify Company against all claims.')
+    );
+    const relevant = analyzeContractRisk(withContext);
+    assert.equal(byId(relevant.findings, 'liability.no_cap')?.kind, 'MISSING_PROVISION');
+    assert.equal(byId(relevant.findings, 'liability.no_cap')?.relevance?.material, true);
+    assert.equal(byId(relevant.findings, 'dispute.no_governing_law')?.severity, 'Medium');
     assert.equal(report.analysis.missing_provisions_assessed, true);
     // Things whose absence favours the contractor are NOT flagged
     assert.equal(byId(report.findings, 'restrictions.non_compete'), undefined);
@@ -407,7 +425,12 @@ test.describe('Phase 3 — missing provisions', () => {
     assert.equal(unconfirmed.evidence[0].source_block_id, 'block-9');
     assert.ok(text.includes(unconfirmed.evidence[0].exact_quote), 'cited quote is verbatim');
     // Without such wording the same topic really is missing
-    assert.equal(byId(analyzeContractRisk(u).findings, 'ip.no_ownership')?.kind, 'MISSING_PROVISION');
+    // Without such wording the same topic really is absent; it is material once the contract has deliverables
+    const bare = analyzeContractRisk(u);
+    assert.equal(byId(bare.observations, 'ip.no_ownership')?.kind, 'MISSING_PROVISION');
+    const withWork = baseUnderstanding();
+    withWork.scope_and_deliverables.deliverables = [found('Design files.', verified('d1', 'b-d1', 'Design files.'))];
+    assert.equal(byId(analyzeContractRisk(withWork).findings, 'ip.no_ownership')?.kind, 'MISSING_PROVISION');
   });
 
   test('15. A missing High protection is not confused with "limited liability company"', () => {
@@ -415,7 +438,12 @@ test.describe('Phase 3 — missing provisions', () => {
     const clauses: ClauseIndex = new Map([
       ['pre', { label: 'Preamble', text, full_text: text, descendant_ids: [], blocks: [{ id: 'block-2', text }] }],
     ]);
-    const report = analyzeContractRisk(baseUnderstanding(), clauses);
+    const u = baseUnderstanding();
+    u.key_provisions.indemnification.contractor_indemnification = found(
+      'Contractor shall indemnify Company against all claims.',
+      verified('ind', 'b-ind', 'Contractor shall indemnify Company against all claims.')
+    );
+    const report = analyzeContractRisk(u, clauses);
     assert.equal(byId(report.findings, 'liability.no_cap')?.kind, 'MISSING_PROVISION');
   });
 });

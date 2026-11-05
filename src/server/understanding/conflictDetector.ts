@@ -19,7 +19,7 @@ export type FactRelation =
   | { kind: 'CONFLICT'; detail: string }
   | { kind: 'UNCERTAIN'; detail: string };
 
-type ValueKind = 'duration' | 'place' | 'date' | 'amount' | 'taxbasis';
+type ValueKind = 'duration' | 'place' | 'date' | 'amount' | 'taxbasis' | 'currency';
 
 const TOPIC_VALUE_KIND: Record<string, ValueKind> = {
   'Payment Terms': 'duration',
@@ -41,6 +41,7 @@ const TOPIC_VALUE_KIND: Record<string, ValueKind> = {
   'Rates & Amounts': 'amount',
   'Minimum Insurance Coverage': 'amount',
   'Amounts Tax Basis': 'taxbasis',
+  Currency: 'currency',
 };
 
 // ---------------------------------------------------------------------------
@@ -154,6 +155,20 @@ export function extractAmounts(text: string): Set<string> {
     }
     out.add(`${n} ${unit}`);
   }
+  return out;
+}
+
+/** Named currencies (ISO codes, words, symbols). A bare "$" is not a named currency and yields nothing. */
+export function extractCurrencies(text: string): Set<string> {
+  const out = new Set<string>();
+  const codes = text.match(/\b(USD|EUR|GBP|CAD|AUD|NZD|INR|JPY|CHF|SGD|HKD|ZAR)\b/gi) || [];
+  for (const c of codes) out.add(c.toUpperCase());
+  if (/\b(US|U\.S\.|United States)\s+dollars?\b/i.test(text)) out.add('USD');
+  if (/\bCanadian\s+dollars?\b/i.test(text)) out.add('CAD');
+  if (/\bAustralian\s+dollars?\b/i.test(text)) out.add('AUD');
+  if (/\bNew Zealand\s+dollars?\b/i.test(text)) out.add('NZD');
+  if (/\beuros?\b|€/i.test(text)) out.add('EUR');
+  if (/\bpounds? sterling\b|£/i.test(text)) out.add('GBP');
   return out;
 }
 
@@ -294,6 +309,7 @@ function valuesFor(kind: ValueKind, fact: FactWithEvidence): Set<string> {
     : kind === 'place' ? extractPlaces
     : kind === 'amount' ? extractAmounts
     : kind === 'taxbasis' ? extractTaxBasis
+    : kind === 'currency' ? extractCurrencies
     : extractDates;
   const fromSummary = extract(fact.summary || '');
   // Prefer the model's summary; fall back to the quoted source text.

@@ -5,12 +5,17 @@ import { DocumentExtractionResult } from './extraction/types';
 import { NormalizedDocument } from './normalization/types';
 import { ContractUnderstandingResult } from './understanding/types';
 import { ContractRiskReport } from './risk/types';
+import { buildDecisionReport, DecisionReport } from './decision';
 
 export interface UploadAnalysis {
   extractionResult?: DocumentExtractionResult;
   normalizedDocument?: NormalizedDocument;
   understandingResult?: ContractUnderstandingResult;
   riskReport?: ContractRiskReport;
+  /** Contract Decision Report, built deterministically from the results above inside this same request */
+  decisionReport?: DecisionReport;
+  /** Set when only the decision report failed; every other result is still returned */
+  decisionReportError?: string;
   /** Set when a stage failed; earlier stages' results are still returned */
   error?: string;
 }
@@ -46,5 +51,16 @@ export async function analyzeUploadedContract(fileId: string, sessionId: string)
   }
   out.understandingResult = risk.understanding;
   out.riskReport = risk.report;
+
+  // Built from data already produced in this request: no extra AI call, no stored state. A failure here must
+  // never hide the earlier results, so it is reported as a warning on the response instead of failing it.
+  try {
+    if (risk.understanding) {
+      out.decisionReport = buildDecisionReport(risk.understanding, risk.report, norm.result, ext.result);
+    }
+  } catch (err) {
+    out.decisionReportError = 'The decision report could not be generated for this document.';
+    console.error('Decision report generation failed:', err instanceof Error ? err.message : err);
+  }
   return out;
 }

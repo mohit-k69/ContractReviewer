@@ -165,6 +165,8 @@ export async function understandContractWithGemini(
         tax_details: parsedJson.tax_details,
         renewal_details: parsedJson.renewal_details,
         warranty_details: parsedJson.warranty_details,
+        deal_terms: parsedJson.deal_terms,
+        obligation_details: parsedJson.obligation_details,
         ambiguities_and_conflicts: parsedJson.ambiguities_and_conflicts,
         omissions_and_missing_terms: parsedJson.omissions_and_missing_terms,
         stats: {

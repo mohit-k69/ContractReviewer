@@ -1,5 +1,5 @@
 import { extractAmounts, extractDurations, extractPlaces } from '../understanding/conflictDetector';
-import { Analysis, max, toDays, toMonths } from './analysis';
+import { Analysis, max, statedPeriod, toDays, toMonths } from './analysis';
 import { FindingEvidence, RiskSeverity } from './types';
 
 /**
@@ -183,7 +183,7 @@ export function dataProtectionRules(a: Analysis): void {
         category: c, kind: 'MISSING_PROVISION', severity: 'Medium',
         title: 'Subcontractor access to data is not addressed',
         explanation: 'Subcontracting is allowed, but the contract does not say whether subcontractors may access the data or on what terms.',
-        why: 'You usually stay responsible for what your helpers do with client data, so unclear rules put the risk on you.',
+        why: 'You may stay responsible for what your helpers do with client data, so unclear rules put the risk on you.',
         suggestion: 'Ask whether subcontractors may access the data, and if so what they must agree to first.',
         searched: 'subcontractor access to data',
       });
@@ -330,7 +330,7 @@ export function insuranceRules(a: Analysis): void {
       title: 'Insurance must continue after the contract ends',
       explanation: months === undefined
         ? 'You must keep insurance in place after termination, and no end date is stated.'
-        : `You must keep insurance in place for about ${Math.round(months)} months after termination.`,
+        : `You must keep insurance in place for ${statedPeriod(a.text(a.facts.ins_post, false)) ?? statedPeriod(a.text(a.facts.ins_post)) ?? 'a stated period'} after termination.`,
       why: 'Premiums continue after the income stops, so a long or open-ended tail is a real cost.',
       suggestion: 'Ask for a defined end date (for example 12 months after termination) or to allow a one-off extended reporting period.',
       evidence: ev(a, 'ins_post'),
@@ -398,7 +398,7 @@ export function subcontractingRules(a: Analysis): void {
       category: c, kind: 'RISK', severity: 'Medium',
       title: 'Subcontracting and delegation are banned outright',
       explanation: 'The contract prohibits subcontracting or delegating any of the work and gives no way to ask for permission.',
-      why: 'You cannot bring in help for peaks, holidays or specialist tasks, and a ban on delegation is also one of the signs courts and authorities look at for employment-like arrangements.',
+      why: 'You cannot bring in help for peaks, holidays or specialist tasks, and a ban on delegation can also be one of the factors considered when worker status is assessed.',
       suggestion: 'Ask for a route to approval, for example “with the client’s prior written consent, not to be unreasonably withheld”.',
       evidence: ev(a, 'sub_prohibition'),
       patternBased: true,
@@ -430,7 +430,7 @@ export function subcontractingRules(a: Analysis): void {
         category: c, kind: 'MISSING_PROVISION', severity: 'Low',
         title: 'Responsibility for subcontractors is not stated',
         explanation: 'Subcontracting is allowed, but the contract does not say who answers for a subcontractor’s work.',
-        why: 'You will usually be treated as responsible for the people you bring in, so it helps to know the extent in advance.',
+        why: 'You may be treated as responsible for the people you bring in, so it helps to know the extent in advance.',
         suggestion: 'Ask for the contract to say that you remain responsible for subcontractor performance, and to confirm the limits on that responsibility.',
         searched: 'responsibility for subcontractors',
       });
@@ -597,6 +597,7 @@ export function renewalRules(a: Analysis): void {
   const noticeText = a.has('ren_notice') ? a.text(a.facts.ren_notice, false) : '';
   const noticeDays = noticeText ? daysIn(noticeText) ?? daysIn(a.text(a.facts.ren_notice)) : undefined;
   const durationMonths = a.has('ren_duration') ? monthsIn(a.text(a.facts.ren_duration, false)) ?? monthsIn(a.text(a.facts.ren_duration)) : undefined;
+  const renewalPeriod = a.has('ren_duration') ? statedPeriod(a.text(a.facts.ren_duration, false)) ?? statedPeriod(a.text(a.facts.ren_duration)) ?? 'the stated period' : '';
   const frozen = a.has('ren_pricing') && /(same|unchanged|existing|current|fixed|frozen|no (increase|change)|shall not (increase|change))/.test(a.text(a.facts.ren_pricing, false));
   const unilateral = a.has('ren_unilateral');
 
@@ -605,13 +606,13 @@ export function renewalRules(a: Analysis): void {
     // frozen pricing each raise it one step (capped at High).
     let severity: RiskSeverity = noticeDays === undefined ? 'Medium' : noticeDays > 60 ? 'High' : noticeDays > 30 ? 'Medium' : 'Low';
     const factors: string[] = [];
-    if (durationMonths !== undefined && durationMonths >= 24 && severity !== 'High') { severity = bump(severity); factors.push(`each renewal runs about ${Math.round(durationMonths)} months`); }
+    if (durationMonths !== undefined && durationMonths >= 24 && severity !== 'High') { severity = bump(severity); factors.push(`each renewal runs for ${renewalPeriod}`); }
     if (frozen && severity !== 'High') { severity = bump(severity); factors.push('your rates stay frozen during renewals'); }
     a.add({
       rule_id: 'renewal.automatic',
       category: c, kind: 'RISK', severity,
       title: 'The contract renews automatically',
-      explanation: `The contract renews automatically${durationMonths !== undefined ? ` for periods of about ${Math.round(durationMonths)} months` : ''}${noticeDays !== undefined ? `, and you must give about ${noticeDays} days’ notice to stop it` : ''}.${factors.length ? ' It is raised in priority because ' + factors.join(' and ') + '.' : ''}`,
+      explanation: `The contract renews automatically${durationMonths !== undefined ? ` for periods of ${renewalPeriod}` : ''}${noticeDays !== undefined ? `, and you must give about ${noticeDays} days’ notice to stop it` : ''}.${factors.length ? ' It is raised in priority because ' + factors.join(' and ') + '.' : ''}`,
       why: 'If you miss the notice window you can be tied in for another full term, possibly at the same rates.',
       suggestion: 'Note the notice deadline in your calendar, and ask for a shorter notice window (for example 30 days) and for renewal only by mutual agreement.',
       evidence: [...ev(a, 'ren_auto').slice(0, 1), ...ev(a, 'ren_notice').slice(0, 1), ...ev(a, 'ren_duration').slice(0, 1)],
@@ -642,7 +643,7 @@ export function renewalRules(a: Analysis): void {
         explanation: reduceByClient
           ? 'The client may change (reduce) your rates when the contract renews.'
           : 'Your rates stay the same during renewal terms, with no provision for increases.',
-        why: 'Costs and market rates change over time, so frozen or client-controlled pricing erodes your income across renewals.',
+        why: 'Costs and rates can change over time, so frozen or client-controlled pricing can erode your income across renewals.',
         suggestion: 'Ask for an annual increase (for example a fixed percentage or an inflation index) and for rate changes to need mutual agreement.',
         evidence: ev(a, 'ren_pricing'),
         patternBased: true,
@@ -683,6 +684,7 @@ export function warrantyRules(a: Analysis): void {
   const c = 'Warranties' as const;
   const durationText = a.has('war_duration') ? a.text(a.facts.war_duration) : '';
   const durationMonthsValue = durationText ? monthsIn(a.text(a.facts.war_duration, false)) ?? monthsIn(durationText) : undefined;
+  const warrantyPeriod = durationText ? statedPeriod(a.text(a.facts.war_duration, false)) ?? statedPeriod(durationText) ?? 'the stated period' : '';
   const perpetual = !!durationText && PERPETUAL.test(durationText);
   const veryLong = perpetual || (durationMonthsValue !== undefined && durationMonthsValue >= 36);
 
@@ -720,10 +722,10 @@ export function warrantyRules(a: Analysis): void {
     a.add({
       rule_id: 'warranty.long_duration',
       category: c, kind: 'RISK', severity: 'High',
-      title: perpetual ? 'Warranty never expires' : `Very long warranty period (about ${Math.round(durationMonthsValue!)} months)`,
-      explanation: perpetual ? 'The warranty is perpetual or has no end.' : `The warranty lasts about ${Math.round(durationMonthsValue!)} months.`,
+      title: perpetual ? 'Warranty never expires' : `Very long warranty period (${warrantyPeriod})`,
+      explanation: perpetual ? 'The warranty is perpetual or has no end.' : `The warranty lasts ${warrantyPeriod}.`,
       why: 'You stay exposed to claims long after you have been paid and moved on, and your ability to price that risk is limited.',
-      suggestion: 'Ask for a fixed warranty period that starts on acceptance (commonly 30 to 90 days for defects).',
+      suggestion: 'Ask for a fixed warranty period that starts on acceptance.',
       evidence: ev(a, 'war_duration'),
       patternBased: true,
     });
@@ -731,8 +733,8 @@ export function warrantyRules(a: Analysis): void {
     a.add({
       rule_id: 'warranty.long_duration',
       category: c, kind: 'RISK', severity: 'Medium',
-      title: `Long warranty period (about ${Math.round(durationMonthsValue)} months)`,
-      explanation: `The warranty lasts about ${Math.round(durationMonthsValue)} months.`,
+      title: `Long warranty period (${warrantyPeriod})`,
+      explanation: `The warranty lasts ${warrantyPeriod}.`,
       why: 'A longer warranty period extends your exposure after the work is paid for.',
       suggestion: 'Ask whether a shorter period (for example 90 days from acceptance) is acceptable.',
       evidence: ev(a, 'war_duration'),

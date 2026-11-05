@@ -1,5 +1,5 @@
 import { extractDates, extractDurations, extractPlaces } from '../understanding/conflictDetector';
-import { Analysis, max } from './analysis';
+import { Analysis, max, statedPeriod } from './analysis';
 import { largestAmount } from './intelligenceRules';
 import { FindingEvidence } from './types';
 
@@ -285,7 +285,7 @@ function capVsIndemnity(a: Analysis): void {
       explanation: `The liability cap expressly excludes your indemnification obligations, so those obligations are not limited by it${narrow ? ' (the indemnity is limited to intellectual-property claims)' : ''}.`,
       why: 'The cap would not protect you for indemnified claims, which can exceed your fees.',
       suggestion: narrow
-        ? 'This is a common arrangement for IP claims. Check that the indemnity is limited to claims caused by your own work.'
+        ? 'The indemnity is limited to intellectual-property claims. Check that it covers only claims caused by your own work.'
         : 'Ask for the indemnity to be limited to specific, narrow claims and for a higher separate cap rather than none.',
       evidence: [...capEv, ...indEv],
       patternBased: true,
@@ -315,7 +315,7 @@ function capVsIndemnity(a: Analysis): void {
       severity: 'Low',
       title: 'It is unclear whether the liability cap applies to your indemnity',
       explanation: 'The contract has both a liability cap and an indemnity, and neither says how it interacts with the other.',
-      why: 'A court may read the indemnity as outside the cap, which would remove your protection for those claims.',
+      why: 'The indemnity could be read as outside the cap, which would remove your protection for those claims.',
       suggestion: 'Ask for a sentence saying that indemnification is (or is not) subject to the cap.',
       evidence: [...capEv, ...indEv],
       patternBased: true,
@@ -505,7 +505,7 @@ function renewalVsTermination(a: Analysis): void {
         kind: 'RISK',
         severity: 'Medium',
         title: 'Termination notice is longer than the renewal period',
-        explanation: `Ending the contract needs about ${notice} days’ notice, but each renewal lasts only about ${Math.round(renewMonths)} months, so notice given during a renewal may only take effect after it has ended.`,
+        explanation: `Ending the contract needs about ${notice} days’ notice, but each renewal lasts only ${statedPeriod(renewalSentence.text) ?? 'a shorter period'}, so notice given during a renewal may only take effect after it has ended.`,
         why: 'You may be unable to leave within a renewal term, effectively locking you in for the next one.',
         suggestion: 'Ask for a notice period that is shorter than the renewal term (for example 30 days).',
         evidence: [...conv.ev, ...renewalSentence.ev],
@@ -688,7 +688,7 @@ function warrantyConsistency(a: Analysis): void {
             severity: 'Medium',
             title: 'Warranty remedies sit outside the liability cap',
             explanation: 'The warranty clause applies its remedies regardless of any limit on liability, so the cap gives no protection for warranty claims.',
-            why: 'Warranty claims can be large and the cap that would normally limit your exposure would not apply.',
+            why: 'Warranty claims can be large and the cap that would otherwise limit your exposure would not apply.',
             suggestion: 'Ask for warranty remedies to be limited to repair or refund of the fees for the affected work and to fall within the overall cap.',
             evidence: [...cap.ev, ...remedy.ev],
             patternBased: true,

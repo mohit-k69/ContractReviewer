@@ -73,6 +73,20 @@ export const INTELLIGENCE_SCHEMA = {
     repair_replace: { topic: 'Repair or Replace', description: 'Obligations to repair, replace or re-perform (note any "at no charge", "unlimited" or "until satisfied")' },
     post_termination_warranty: { topic: 'Post-Termination Warranty', description: 'Warranty or defect obligations that continue after termination' },
   },
+  deal_terms: {
+    contract_title: { topic: 'Contract Title', description: 'The agreement\'s own title as written (for example the heading), not a summary' },
+    currency: { topic: 'Currency', description: 'The currency of the fees. Use AMBIGUOUS when only a bare "$" is used without naming the currency' },
+    milestones: { topic: 'Milestones', description: 'Milestones or staged deliveries, and any payment tied to them' },
+    invoice_requirements: { topic: 'Invoice Requirements', description: 'What an invoice must contain or how and where it must be submitted' },
+    payment_conditions: { topic: 'Payment Conditions', description: 'Conditions that must be met before payment is due (for example approved hours, approval of work)' },
+    contractor_termination_right: { topic: 'Contractor Termination Right', description: 'A right of the contractor (or of either party) to terminate, with any notice or conditions. A statement that only the client may terminate is NOT_FOUND' },
+  },
+  obligation_details: {
+    delivery_deadlines: { topic: 'Delivery Deadlines', description: 'Dates or deadlines by which the contractor must deliver or complete work' },
+    revisions: { topic: 'Revisions', description: 'How many revisions are included, any limit, or how extra revisions are handled. Use AMBIGUOUS for vague wording ("reasonable revisions")' },
+    client_resources: { topic: 'Client Resources', description: 'The client must provide information, access, materials, approvals or cooperation' },
+    client_review_feedback: { topic: 'Client Review and Feedback', description: 'The client must review, respond, approve or give feedback (note any time limit)' },
+  },
 } as const satisfies Record<string, Record<string, IntelligenceField>>;
 
 export type IntelligenceGroupKey = keyof typeof INTELLIGENCE_SCHEMA;
@@ -86,6 +100,8 @@ export const INTELLIGENCE_GROUP_LABELS: Record<IntelligenceGroupKey, string> = {
   tax_details: 'tax',
   renewal_details: 'renewal',
   warranty_details: 'warranty',
+  deal_terms: 'deal terms',
+  obligation_details: 'obligation details',
 };
 
 /** Dot-paths (e.g. "insurance.cyber") of every intelligence fact. */

@@ -19,6 +19,8 @@ const NEUTRAL = 'Contractor shall deliver the Services on time.';
 
 type Case = {
   path: string; // group.field
+  /** The title is a heading, so it has its own tests below instead of a one-clause table row */
+  skipTable?: boolean;
   positive: string;
   negative: string;
   /** Vague wording for fields where AMBIGUOUS is meaningful */
@@ -78,6 +80,18 @@ const CASES: Case[] = [
   { path: 'warranty_details.warranty_duration', positive: 'Contractor warrants the deliverables for ninety (90) days after acceptance.', negative: NEUTRAL, ambiguous: 'Contractor warrants the deliverables for a reasonable period.' },
   { path: 'warranty_details.repair_replace', positive: 'Contractor shall repair any defective deliverable at no additional charge.', negative: NEUTRAL },
   { path: 'warranty_details.post_termination_warranty', positive: 'The warranties shall survive termination of this Agreement.', negative: NEUTRAL },
+  // --- deal terms
+  { path: 'deal_terms.contract_title', positive: '', negative: '', skipTable: true },
+  { path: 'deal_terms.currency', positive: 'All fees are payable in US dollars (USD).', negative: NEUTRAL, ambiguous: 'Company shall pay Contractor $90 per hour for approved hours worked.' },
+  { path: 'deal_terms.milestones', positive: 'Milestone 1 payment of fifty percent is due on delivery of the design.', negative: NEUTRAL },
+  { path: 'deal_terms.invoice_requirements', positive: 'Each invoice must include an itemized breakdown of the hours worked.', negative: 'Invoices are payable Net 30 days from receipt of a valid invoice.' },
+  { path: 'deal_terms.payment_conditions', positive: "Payment is conditioned on Company's acceptance of the deliverable.", negative: 'Company shall pay Contractor monthly.' },
+  { path: 'deal_terms.contractor_termination_right', positive: 'Contractor may terminate this Agreement on thirty (30) days written notice.', negative: 'Company may terminate this Agreement at any time.' },
+  // --- obligation details
+  { path: 'obligation_details.delivery_deadlines', positive: 'Contractor shall deliver the final designs by June 15, 2026.', negative: 'Company shall review each deliverable within ten (10) business days.' },
+  { path: 'obligation_details.revisions', positive: 'The fee includes two (2) rounds of revisions.', negative: NEUTRAL, ambiguous: 'Contractor shall make reasonable revisions.' },
+  { path: 'obligation_details.client_resources', positive: 'Company shall provide Contractor with access to its systems and the information needed for the Services.', negative: NEUTRAL },
+  { path: 'obligation_details.client_review_feedback', positive: 'Company shall review each deliverable and provide feedback within five (5) business days.', negative: NEUTRAL },
 ];
 
 function factAt(u: ContractUnderstandingResult, path: string): FactWithEvidence {
@@ -88,10 +102,10 @@ function factAt(u: ContractUnderstandingResult, path: string): FactWithEvidence 
 test.describe('Contractor intelligence — extraction (deterministic engine; Gemini is mocked elsewhere)', () => {
   test('1. Every new fact has a case: the table covers the whole schema', () => {
     assert.deepEqual(CASES.map((c) => c.path).sort(), intelligenceFactPaths().sort());
-    assert.equal(CASES.length, 45);
+    assert.equal(CASES.length, 55);
   });
 
-  for (const c of CASES) {
+  for (const c of CASES.filter((x) => !x.skipTable)) {
     test(`2. ${c.path}: states it -> FOUND with a verbatim verified quote; unrelated text -> NOT_FOUND with no evidence`, () => {
       const pos = review(c.positive);
       const fact = factAt(pos.understanding, c.path);
@@ -119,6 +133,24 @@ test.describe('Contractor intelligence — extraction (deterministic engine; Gem
       });
     }
   }
+
+  test('3b. The contract title is the heading text itself; a sentence or a missing heading is not a title', () => {
+    const titled = runPipeline('SERVICES AGREEMENT\n\nThis Services Agreement is made between A ("Company") and B ("Contractor").\n\nTERMS\n\n1.1 Services. Contractor shall deliver the Services on time.');
+    const t = titled.understanding.deal_terms.contract_title;
+    assert.equal(t.status, 'FOUND');
+    assert.equal(t.evidence[0].exact_quote, 'SERVICES AGREEMENT');
+    assert.equal(t.evidence[0].is_verified, true);
+    const untitled = runPipeline('Notes from our call.\n\nThis Services Agreement is made between A ("Company") and B ("Contractor").\n\nTERMS\n\n1.1 Services. Contractor shall deliver the Services on time.');
+    assert.equal(untitled.understanding.deal_terms.contract_title.status, 'NOT_FOUND', 'the preamble sentence is not a title');
+    assert.deepEqual(untitled.understanding.deal_terms.contract_title.evidence, []);
+  });
+
+  test('3c. "Contractor may not terminate" is a restriction, not a termination right; a bare "$" is ambiguous but a named currency is explicit', () => {
+    const no = review('Contractor may not terminate this Agreement before completion of the Services.');
+    assert.equal(no.understanding.deal_terms.contractor_termination_right.status, 'NOT_FOUND');
+    const both = review('Company shall pay Contractor $90 per hour.', 'All fees are stated in US dollars.');
+    assert.equal(both.understanding.deal_terms.currency.status, 'FOUND', 'a specific currency statement wins over a bare $');
+  });
 
   test('4. A negated renewal ("shall not renew") is not an automatic renewal, and "exclusive property" is not exclusivity', () => {
     const r = review('This Agreement shall not automatically renew.', 'The work product shall be the sole and exclusive property of Company.');

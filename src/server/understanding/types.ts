@@ -199,6 +199,24 @@ export interface WarrantyTerms {
   post_termination_warranty: FactWithEvidence; // Warranty/defect obligations surviving termination
 }
 
+/** Deal-level facts needed to present the agreement (title, money mechanics, who may end it). */
+export interface DealTerms {
+  contract_title: FactWithEvidence; // The agreement's own title / name as written
+  currency: FactWithEvidence; // Currency of the amounts (AMBIGUOUS when only a bare "$" is used)
+  milestones: FactWithEvidence; // Milestones or staged deliveries tied to payment
+  invoice_requirements: FactWithEvidence; // What an invoice must contain / how it is submitted
+  payment_conditions: FactWithEvidence; // Conditions that must be met before payment is due (approved hours, approval, ...)
+  contractor_termination_right: FactWithEvidence; // The contractor (or either party) may terminate; include notice/conditions
+}
+
+/** What each side must actually do, beyond the fee itself. */
+export interface ObligationDetails {
+  delivery_deadlines: FactWithEvidence; // Deadlines / dates by which the contractor must deliver
+  revisions: FactWithEvidence; // Number, limit or pricing of revisions
+  client_resources: FactWithEvidence; // Client must provide information, access, materials or cooperation
+  client_review_feedback: FactWithEvidence; // Client must review, respond, approve or give feedback (with any time limit)
+}
+
 export interface AmbiguityOrConflict {
   topic: string;
   description: string;
@@ -238,6 +256,8 @@ export interface ContractUnderstandingResult {
   tax_details: TaxTerms;
   renewal_details: RenewalTerms;
   warranty_details: WarrantyTerms;
+  deal_terms: DealTerms;
+  obligation_details: ObligationDetails;
   ambiguities_and_conflicts: AmbiguityOrConflict[];
   omissions_and_missing_terms: OmissionOrMissingTerm[];
   stats: UnderstandingStats;

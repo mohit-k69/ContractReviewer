@@ -109,7 +109,7 @@ function paymentRules(a: Analysis): void {
         title: 'Payment depends on a condition the client controls',
         explanation: 'Payment appears to depend on the client’s approval, satisfaction, or on the client being paid by someone else.',
         why: 'You could do the work and still not be paid if the condition is not met, even though the delay is not your fault.',
-        suggestion: 'Ask for payment to be due on a fixed date after invoicing, regardless of third-party payment, and for approval to be deemed given after a set number of days.',
+        suggestion: 'Ask for payment to be due on a fixed date after invoicing, regardless of third-party payment, and for approval to be deemed given after a set period.',
         evidence: a.evidenceFocused(CONDITIONAL_PAYMENT, payment_terms), patternBased: true,
       });
     }
@@ -120,7 +120,7 @@ function paymentRules(a: Analysis): void {
         title: `Very long payment period (${days} days)`,
         explanation: `The contract gives the client ${days} days to pay an invoice.`,
         why: 'Waiting more than two months to be paid strains cash flow and increases the chance of non-payment.',
-        suggestion: 'Ask for payment within 30 days (or 15 days for smaller projects), or for milestone or upfront payments.',
+        suggestion: 'Ask for a shorter payment period, or for milestone or upfront payments.',
         evidence: a.evidenceFocused(/\bnet[\s-]*\d+|\d+\s*(business\s+)?days?/i, payment_terms),
       });
     } else if (days !== undefined && days > 45) {
@@ -129,8 +129,8 @@ function paymentRules(a: Analysis): void {
         category: c, kind: 'RISK', severity: 'Medium',
         title: `Long payment period (${days} days)`,
         explanation: `The contract gives the client ${days} days to pay an invoice.`,
-        why: 'A longer payment window delays your income compared with the common 15–30 day terms.',
-        suggestion: 'Ask whether payment can be made within 30 days, or whether part can be paid upfront.',
+        why: 'A longer payment window delays your income.',
+        suggestion: 'Ask whether the payment period can be shortened, or whether part can be paid upfront.',
         evidence: a.evidenceFocused(/\bnet[\s-]*\d+|\d+\s*(business\s+)?days?/i, payment_terms),
       });
     }
@@ -295,7 +295,7 @@ function terminationRules(a: Analysis): { highRisk: boolean } {
         title: `Very short termination notice (${noticeDays} day${noticeDays === 1 ? '' : 's'})`,
         explanation: `Termination without cause needs only ${noticeDays} day${noticeDays === 1 ? '' : 's'} notice.`,
         why: 'A very short notice period gives you little time to replace the income.',
-        suggestion: 'Ask for at least 14–30 days’ notice.',
+        suggestion: 'Ask for a longer notice period.',
         evidence: a.evidenceFocused(/notice/i, term_convenience),
       });
     }
@@ -351,7 +351,7 @@ function ipRules(a: Analysis): void {
       category: c, kind: 'MISSING_PROVISION', severity: 'Medium',
       title: 'No statement of who owns the work',
       explanation: 'The contract does not say who owns the work product you create.',
-      why: 'Ownership disputes are costly. By default, a freelancer often keeps rights unless they are assigned in writing, which may not match what either side expects.',
+      why: 'Ownership disputes are costly, and the contract is the clearest place to settle who owns the work.',
       suggestion: 'Ask for ownership to be stated clearly, ideally transferring on full payment.',
       searched: 'ownership of work product',
     });
@@ -540,7 +540,7 @@ function confidentialityRules(a: Analysis): void {
       title: 'No standard exclusions from confidentiality',
       explanation: 'The contract does not exclude information that is public, already known to you, or independently developed.',
       why: 'Without exclusions you could breach the contract by using information that is publicly available or that you already knew.',
-      suggestion: 'Ask for the usual exclusions: public information, information you already had, independently developed information, and legally required disclosures.',
+      suggestion: 'Ask for exclusions covering public information, information you already had, independently developed information, and legally required disclosures.',
       searched: 'standard confidentiality exclusions',
     });
   }
@@ -596,7 +596,7 @@ function restrictionRules(a: Analysis): void {
       title: 'Non-solicitation of clients or staff',
       explanation: `You agree not to solicit the client’s customers or staff${months !== undefined ? ` for about ${Math.round(months * 10) / 10} months` : ''}.`,
       why: 'Broad non-solicitation terms can stop you approaching people or companies you might legitimately work with.',
-      suggestion: 'Ask to limit it to customers you dealt with through this contract and to a duration of 6–12 months.',
+      suggestion: 'Ask to limit it to customers you dealt with through this contract and to a shorter, defined duration.',
       evidence: a.evidenceFocused(/solicit/i, non_solicit), patternBased: true,
     });
   }
@@ -635,7 +635,7 @@ function disputeRules(a: Analysis): void {
       category: c, kind: 'RISK', severity: 'Low',
       title: 'Disputes go to arbitration',
       explanation: 'Disputes must be resolved through arbitration instead of the courts.',
-      why: 'Arbitration can be faster, but it limits appeal rights, may be costly for you, and usually removes the option of a jury or class action.',
+      why: 'Arbitration can be faster, but it limits appeal rights, may be costly for you, and may remove the option of a court case, a jury or a class action.',
       suggestion: 'Ask who pays the arbitration costs and whether the location is reasonable for you.',
       evidence: a.evidenceFocused(/arbitrat/i, dispute_method), patternBased: true,
     });
@@ -924,6 +924,16 @@ function buildOverview(a: Analysis, findings: RiskFinding[]) {
 // Public API
 // ---------------------------------------------------------------------------
 
+function sortFindings(list: RiskFinding[]): RiskFinding[] {
+  return [...list].sort(
+    (x, y) =>
+      SEVERITY_RANK[y.severity] - SEVERITY_RANK[x.severity] ||
+      KIND_RANK[y.kind] - KIND_RANK[x.kind] ||
+      RISK_CATEGORIES.indexOf(x.category) - RISK_CATEGORIES.indexOf(y.category) ||
+      x.id.localeCompare(y.id)
+  );
+}
+
 /**
  * Turns a verified Phase 2C contract understanding into an evidence-backed review report.
  * Pure and deterministic: no network, no AI calls, no mutation of the input.
@@ -955,20 +965,14 @@ export function analyzeContractRisk(
   warrantyRules(a);
   crossClauseRules(a);
 
-  const findings = [...a.findings].sort(
-    (x, y) =>
-      SEVERITY_RANK[y.severity] - SEVERITY_RANK[x.severity] ||
-      KIND_RANK[y.kind] - KIND_RANK[x.kind] ||
-      RISK_CATEGORIES.indexOf(x.category) - RISK_CATEGORIES.indexOf(y.category) ||
-      x.id.localeCompare(y.id)
-  );
+  const findings = sortFindings(a.findings);
 
   const unverifiedFacts = Math.max(
     0,
     (understanding.stats?.total_facts ?? 0) - (understanding.stats?.verified_facts ?? 0)
   );
   const limitations: string[] = [
-    'Findings come from rules about terms freelancers commonly negotiate; they are not specific to your location or circumstances.',
+    'Findings come from rules about terms that can affect freelancers; they are not specific to your location or circumstances.',
     'A finding can only be as complete as the text provided. Terms in exhibits, emails, or other documents are not considered.',
   ];
   if (understanding.classification?.category !== 'Freelance / Independent Contractor Agreement') {
@@ -1004,6 +1008,7 @@ export function analyzeContractRisk(
     parties: (understanding.parties || []).map((p) => ({ name: p.name, role: p.role, defined_term: p.defined_term })),
     overview: buildOverview(a, findings),
     findings,
+    observations: sortFindings(a.observations),
     key_terms: buildKeyTerms(a),
     checklist: buildChecklist(a, findings),
     analysis: {

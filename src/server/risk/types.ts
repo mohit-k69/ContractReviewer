@@ -69,6 +69,17 @@ export interface FindingConfidence {
   reasons: string[];
 }
 
+/**
+ * Why a missing provision is (or is not) a material concern for THIS contract. A missing clause is only a
+ * material risk when something stated in the contract makes it relevant; otherwise it is an observation.
+ */
+export interface FindingRelevance {
+  material: boolean;
+  reason: string;
+  /** Verified contract text that makes the provision relevant (empty when none is needed or none exists) */
+  trigger_evidence: FindingEvidence[];
+}
+
 export interface RiskFinding {
   /** Stable, deterministic id: `<rule_id>` (one finding per rule per document) */
   id: string;
@@ -86,7 +97,14 @@ export interface RiskFinding {
   /** Explains the (lack of) evidence, e.g. what was searched for a missing provision */
   evidence_note?: string;
   /** Practical question to ask or negotiation suggestion */
+  /** A grounded question or action. It never states an amount or deadline that is not in the contract. */
   suggestion: string;
+  /** An example alternative, clearly a suggestion and not a benchmark, a legal requirement or a stated term */
+  illustrative_alternative?: string;
+  /** For missing provisions: the topic that was searched for */
+  topic?: string;
+  /** For missing provisions: whether the contract context makes the absence relevant */
+  relevance?: FindingRelevance;
   confidence: FindingConfidence;
   /** What we are not sure about, if anything */
   uncertainty?: string;
@@ -146,6 +164,11 @@ export interface ContractRiskReport {
   overview: RiskOverview;
   /** Sorted by severity (High first), then kind, then category */
   findings: RiskFinding[];
+  /**
+   * Informational observations: provisions that are not in the contract but that nothing in the contract makes
+   * relevant. They are not risks and do not affect the review priority, indicators or checklist.
+   */
+  observations: RiskFinding[];
   key_terms: KeyTerm[];
   checklist: ChecklistItem[];
   analysis: AnalysisContext;

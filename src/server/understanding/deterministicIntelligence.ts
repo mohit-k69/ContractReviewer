@@ -1,5 +1,7 @@
 import {
   DataProtectionTerms,
+  DealTerms,
+  ObligationDetails,
   FactWithEvidence,
   InsuranceTerms,
   RenewalTerms,
@@ -83,9 +85,13 @@ function resolve(sentences: Sentence[], spec: FactSpec): FactWithEvidence {
       unique.push(h);
     }
   }
-  const chosen = unique.slice(0, spec.maxEvidence ?? 1);
+  const vagueSentence = (h: Sentence) => !!spec.vague && spec.vague.test(h.text) && !(spec.specific && spec.specific.test(h.text));
+  // Prefer a sentence that is specific: a precise statement elsewhere must not be overridden by an earlier vague one
+  const preferred = unique.find((h) => !vagueSentence(h));
+  const ordered = preferred ? [preferred, ...unique.filter((h) => h !== preferred)] : unique;
+  const chosen = ordered.slice(0, spec.maxEvidence ?? 1);
   const first = chosen[0];
-  const isVague = !!spec.vague && spec.vague.test(first.text) && !(spec.specific && spec.specific.test(first.text));
+  const isVague = vagueSentence(first);
 
   return {
     status: isVague ? 'AMBIGUOUS' : 'FOUND',
@@ -505,6 +511,111 @@ const WARRANTY: Record<keyof WarrantyTerms, FactSpec> = {
   },
 };
 
+
+// ---------------------------------------------------------------------------
+// Deal terms (title is handled separately: it is a heading, not a sentence)
+// ---------------------------------------------------------------------------
+const DEAL: Record<Exclude<keyof DealTerms, 'contract_title'>, FactSpec> = {
+  currency: {
+    include: [
+      /\b(USD|EUR|GBP|CAD|AUD|NZD|INR|JPY|CHF|SGD|HKD|ZAR)\b|\b(US|U\.S\.|United States|Canadian|Australian|New Zealand|Singapore)\s+dollars?\b|\b(euros?|pounds? sterling|rupees?)\b|[€£]\s?\d/i,
+      /(?<![A-Za-z])\$\s?\d/,
+    ],
+    // A bare "$" does not say which dollar
+    vague: /(?<![A-Za-z])\$\s?\d/,
+    specific: /\b(USD|EUR|GBP|CAD|AUD|NZD|INR|JPY|CHF|SGD|HKD|ZAR)\b|dollars?\b|euros?\b|pounds?\b|[€£]/i,
+    notFound: 'No currency is stated.',
+  },
+  milestones: {
+    include: [/\bmilestones?\b/i],
+    notFound: 'No milestones or staged deliveries found.',
+  },
+  invoice_requirements: {
+    include: [
+      /invoices?[^.]{0,120}\b(shall|must|should)\b[^.]{0,100}(include|contain|itemi[sz]e\w*|detail\w*|specify|describe|submitted|accompanied|supporting|purchase order|po number|tax id|vat number|breakdown|receipts?)/i,
+      /\b(itemi[sz]ed|detailed)\s+invoices?\b/i,
+      /(submit|send|deliver)[^.]{0,40}invoices?[^.]{0,60}\b(to|by|via|through|email|portal)\b/i,
+    ],
+    notFound: 'No invoice requirements found.',
+  },
+  payment_conditions: {
+    include: [
+      /(payment|invoices?|fees?|compensation)[^.]{0,80}(conditioned (up)?on|contingent (up)?on|subject to|only (after|upon|if)|provided that|unless)/i,
+      /(no|not)\s+(payment|invoice)[^.]{0,60}(until|before|unless)/i,
+      /\bapproved\s+(hours|timesheets|expenses|time)\b/i,
+    ],
+    notFound: 'No conditions on payment found.',
+  },
+  contractor_termination_right: {
+    include: [
+      /(contractor|consultant|freelancer)\s+(may|can|has the right to|shall have the right to)\s+terminate/i,
+      /(either|each|both)\s+part(y|ies)\s+(may|can|has the right to)\s+terminate/i,
+      /terminate[^.]{0,60}\b(by|upon)\s+(contractor|either party)/i,
+    ],
+    // "Contractor may not terminate" is a restriction, not a right
+    exclude: [/(may|shall|can|must)\s+not\s+terminate|cannot\s+terminate/i],
+    notFound: 'No right for the contractor to terminate found.',
+  },
+};
+
+const OBLIGATIONS: Record<keyof ObligationDetails, FactSpec> = {
+  delivery_deadlines: {
+    include: [
+      /\b(deliver|complete|submit|provide)(s|ed)?\b[^.]{0,80}\b(by|on or before|no later than|before)\s+(\w+\s+){0,2}(\d{1,2}[,/ ]|(january|february|march|april|may|june|july|august|september|october|november|december)\b)/i,
+      /\b(deliver|complete|submit|provide)(s|ed)?\b[^.]{0,80}\bwithin\s+(\w+\s*)?(\(\d+\)\s*)?(business\s+)?(days?|weeks?|months?)\b/i,
+      /\b(deadline|due date|delivery date|delivery schedule)\b[^.]{0,60}(\d|january|february|march|april|may|june|july|august|september|october|november|december)/i,
+      /time is of the essence/i,
+    ],
+    // Payment, notice and other periods are not delivery deadlines
+    exclude: [/\b(invoice|payable|payment|notice|terminat|renew|insurance|breach|warrant|confidential|cure|refund|accept|review|inspect|feedback|respond)\w*/i],
+    notFound: 'No delivery deadlines found.',
+  },
+  revisions: {
+    include: [
+      /(\d+|\w+)\s*(\(\d+\)\s*)?(rounds? of )?revisions?\b|rounds? of (changes|revisions|feedback)/i,
+      /revisions?[^.]{0,80}(included|limited|up to|unlimited|additional|extra|charged)/i,
+      /(unlimited|any number of)\s+(revisions?|changes)|(a few|several|some|reasonable)\s+revisions?/i,
+    ],
+    vague: /(a few|several|some|reasonable)\s+revisions?/i,
+    specific: /\d|\b(one|two|three|four|five|six)\b/i,
+    notFound: 'No terms on revisions found.',
+  },
+  client_resources: {
+    include: [
+      /(client|company|customer)\s+(shall|will|agrees to|must)\s+(provide|supply|furnish|give|make available|grant)[^.]{0,100}(access|information|materials|content|assets|credentials|data|documentation|resources|equipment|cooperation|specifications|requirements|approvals?)/i,
+      /(timely|prompt)\s+(access|cooperation|information|provision)|cooperat\w+\s+(with|in)\b/i,
+    ],
+    notFound: 'No client obligation to provide information, access or resources found.',
+  },
+  client_review_feedback: {
+    include: [
+      /(client|company|customer)\s+(shall|will|must|agrees to)\s+[^.]{0,60}(review|inspect|test|evaluate|respond|provide feedback|approve|accept|reject|comment)/i,
+      /\bwithin\s+\w+\s*(\(\d+\)\s*)?(business\s+)?days?\b[^.]{0,40}(review|accept|approve|reject|respond|feedback)/i,
+      /(feedback|comments|approvals?)\s+(shall|must|will)\s+be\s+(provided|given|delivered)/i,
+    ],
+    notFound: 'No client duty to review, respond or give feedback found.',
+  },
+};
+
+/**
+ * The agreement's title: a short heading near the top that names the document type. It is a heading, so it is
+ * taken from the element text itself and the quote is that exact text.
+ */
+function titleFact(elements: IntelElement[]): FactWithEvidence {
+  for (const el of elements.slice(0, 6)) {
+    const text = el.text.trim();
+    if (text.length < 8 || text.length > 110) continue;
+    if (!/\b(agreement|contract|statement of work|engagement letter|master services|\bsow\b|terms of (service|engagement))\b/i.test(text)) continue;
+    if (/\b(between|is made|is entered|by and among|hereby)\b/i.test(text) || /[.;]$/.test(text)) continue; // a sentence, not a title
+    return {
+      status: 'FOUND',
+      summary: text,
+      evidence: [{ element_id: el.id, source_block_id: el.source_block_id, exact_quote: text }],
+    };
+  }
+  return { status: 'NOT_FOUND', summary: 'No agreement title found.', evidence: [] };
+}
+
 function resolveGroup<K extends string>(
   sentences: Sentence[],
   specs: Record<K, FactSpec>
@@ -522,6 +633,8 @@ export interface IntelligenceFacts {
   tax_details: TaxTerms;
   renewal_details: RenewalTerms;
   warranty_details: WarrantyTerms;
+  deal_terms: DealTerms;
+  obligation_details: ObligationDetails;
 }
 
 export function analyzeIntelligenceFacts(elements: IntelElement[]): IntelligenceFacts {
@@ -534,5 +647,7 @@ export function analyzeIntelligenceFacts(elements: IntelElement[]): Intelligence
     tax_details: resolveGroup(sentences, TAX),
     renewal_details: resolveGroup(sentences, RENEWAL),
     warranty_details: resolveGroup(sentences, WARRANTY),
+    deal_terms: { contract_title: titleFact(elements), ...resolveGroup(sentences, DEAL) },
+    obligation_details: resolveGroup(sentences, OBLIGATIONS),
   };
 }

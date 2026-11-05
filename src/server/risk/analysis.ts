@@ -14,7 +14,9 @@ import {
   RiskCategory,
   RiskFinding,
   RiskSeverity,
+  FindingRelevance,
 } from './types';
+import { relevanceFor } from './relevance';
 
 export const SEVERITY_RANK: Record<RiskSeverity, number> = { High: 3, Medium: 2, Low: 1 };
 export const KIND_RANK: Record<FindingKind, number> = {
@@ -43,6 +45,13 @@ const INTELLIGENCE_CATEGORY: Record<IntelligenceGroupKey, RiskCategory> = {
   tax_details: 'Tax',
   renewal_details: 'Renewal',
   warranty_details: 'Warranties',
+  deal_terms: 'Payment',
+  obligation_details: 'Scope of Work',
+};
+
+/** Per-field category overrides where a field belongs to a different area than its group. */
+const FIELD_CATEGORY: Record<string, RiskCategory> = {
+  'deal_terms.contractor_termination_right': 'Termination',
 };
 
 /** Short prefixes for the intelligence fact keys (e.g. wc_hours) */
@@ -92,13 +101,23 @@ export const INTEL_KEYS: Record<string, string> = {
   'warranty_details.warranty_duration': 'war_duration',
   'warranty_details.repair_replace': 'war_repair',
   'warranty_details.post_termination_warranty': 'war_post',
+  'deal_terms.contract_title': 'deal_title',
+  'deal_terms.currency': 'deal_currency',
+  'deal_terms.milestones': 'deal_milestones',
+  'deal_terms.invoice_requirements': 'deal_invoice',
+  'deal_terms.payment_conditions': 'deal_pay_conditions',
+  'deal_terms.contractor_termination_right': 'deal_contractor_term',
+  'obligation_details.delivery_deadlines': 'obl_deadlines',
+  'obligation_details.revisions': 'obl_revisions',
+  'obligation_details.client_resources': 'obl_client_resources',
+  'obligation_details.client_review_feedback': 'obl_client_review',
 };
 
 function collectIntelligenceFacts(u: ContractUnderstandingResult): FactRef[] {
   const out: FactRef[] = [];
   forEachIntelligenceFact(u, (fact, group, field, topic) => {
     const key = INTEL_KEYS[`${group}.${field}`] ?? `${group}.${field}`;
-    out.push({ key, label: topic, category: INTELLIGENCE_CATEGORY[group], fact });
+    out.push({ key, label: topic, category: FIELD_CATEGORY[`${group}.${field}`] ?? INTELLIGENCE_CATEGORY[group], fact });
   });
   return out;
 }
@@ -196,6 +215,29 @@ const CORROBORATION: Record<string, RegExp> = {
 // Analysis context: verified evidence + text helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Separates a suggestion's example wording ("for example ...", "such as ...", "(commonly ...)") from the action.
+ * The example is returned as an illustrative alternative: a suggestion that can be shown as such, never as a
+ * benchmark or a stated term. The action itself stays grounded and free of example values.
+ */
+export function splitIllustration(suggestion: string): { action: string; illustration?: string } {
+  const examples: string[] = [];
+  let action = suggestion;
+  // Parenthetical examples: "(for example 14–30 days)", "(such as ...)", "(commonly ...)", "(or 15 days for ...)"
+  action = action.replace(/\s*\((?:for example|such as|e\.g\.|commonly|or )([^)]*)\)/gi, (_m, inner) => {
+    examples.push(inner.trim());
+    return '';
+  });
+  // Trailing examples after a comma: ", for example “...”" / ", such as 72 hours"
+  action = action.replace(/,?\s+(?:for example|such as|e\.g\.)\s+([^.]*?)(?=\.|$)/gi, (_m, inner) => {
+    examples.push(inner.trim());
+    return '';
+  });
+  action = action.replace(/\s+([.,])/g, '$1').replace(/\s{2,}/g, ' ').trim();
+  if (!/[.!?]$/.test(action)) action += '.';
+  return examples.length ? { action, illustration: examples.join('; ') } : { action };
+}
+
 /** The sentence of `text` containing the match at [index, index+length) - always a verbatim substring. */
 export function sentenceAround(text: string, index: number, length: number): string {
   const start = Math.max(text.lastIndexOf('. ', index) + 1, 0);
@@ -206,6 +248,8 @@ export function sentenceAround(text: string, index: number, length: number): str
 
 export class Analysis {
   readonly findings: RiskFinding[] = [];
+  /** Informational observations: absent provisions that nothing in the contract makes relevant */
+  readonly observations: RiskFinding[] = [];
   readonly facts: Record<string, FactWithEvidence | undefined> = {};
   readonly fallback: boolean;
   readonly fullCoverage: boolean;
@@ -572,7 +616,7 @@ export class Analysis {
     patternBased?: boolean;
     uncertainty?: string;
   }): void {
-    if (this.findings.some((f) => f.id === p.rule_id)) return;
+    if (this.findings.some((f) => f.id === p.rule_id) || this.observations.some((f) => f.id === p.rule_id)) return;
     // Hard rule: a missing provision NEVER carries evidence.
     const evidence = p.kind === 'MISSING_PROVISION' ? [] : p.evidence || [];
     const uncertaintyParts: string[] = [];
@@ -589,14 +633,25 @@ export class Analysis {
     }
     if (p.uncertainty) uncertaintyParts.push(p.uncertainty);
 
-    this.findings.push({
+    // Relevance gate: an absent provision is only a material concern when the contract makes it relevant
+    let relevance: FindingRelevance | undefined;
+    if (p.kind === 'MISSING_PROVISION') {
+      const r = relevanceFor(p.rule_id, this);
+      relevance = { material: r.material, reason: r.reason, trigger_evidence: r.evidence };
+    }
+    const informational = relevance !== undefined && !relevance.material;
+    const { action, illustration } = splitIllustration(p.suggestion);
+
+    (informational ? this.observations : this.findings).push({
       id: p.rule_id,
       rule_id: p.rule_id,
       category: p.category,
       kind: p.kind,
-      severity: p.severity,
+      severity: informational ? 'Low' : p.severity,
       title: p.title,
-      explanation: p.explanation,
+      explanation: informational
+        ? `${p.explanation} Noted for completeness only: ${relevance!.reason}`
+        : p.explanation,
       why_it_matters: p.why,
       evidence,
       evidence_note:
@@ -605,7 +660,10 @@ export class Analysis {
           : evidence.length === 0
           ? 'No verified quote is available for this finding.'
           : undefined,
-      suggestion: p.suggestion,
+      suggestion: action,
+      ...(illustration ? { illustrative_alternative: illustration } : {}),
+      ...(p.kind === 'MISSING_PROVISION' ? { topic: p.searched || 'this term' } : {}),
+      ...(relevance ? { relevance } : {}),
       confidence: this.confidence(p.kind, evidence, { patternBased: p.patternBased }),
       uncertainty: uncertaintyParts.length ? uncertaintyParts.join(' ') : undefined,
     });
@@ -636,6 +694,20 @@ export function toMonths(values: Set<string>): number[] {
     else if (unit === 'days') out.push(num / 30);
   }
   return out;
+}
+
+/**
+ * The longest period stated in `text`, in the contract's own words and unit (for example "five (5) years").
+ * Used so a finding quotes the period as written instead of a converted figure.
+ */
+export function statedPeriod(text: string): string | undefined {
+  const re = /\b(?:\d+(?:\.\d+)?|[a-z]+(?:[- ][a-z]+)?)\s*(?:\(\d+\)\s*)?(?:business\s+)?(?:days?|weeks?|months?|years?)\b/gi;
+  let best: { text: string; months: number } | undefined;
+  for (const m of text.matchAll(re)) {
+    const months = max(toMonths(extractDurations(m[0])));
+    if (months !== undefined && (!best || months > best.months)) best = { text: m[0].trim(), months };
+  }
+  return best?.text;
 }
 
 export const max = (xs: number[]): number | undefined => (xs.length ? Math.max(...xs) : undefined);
