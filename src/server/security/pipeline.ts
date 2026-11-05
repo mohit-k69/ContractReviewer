@@ -21,6 +21,9 @@ export async function runSecurityInspectionPipeline(
     clamavHost?: string;
     clamavPort?: number;
     timeoutMs?: number;
+    scanUrl?: string;
+    scanToken?: string;
+    fetchImpl?: typeof fetch;
   } = {}
 ): Promise<FullSecurityReport> {
   const startTime = Date.now();
@@ -239,10 +242,11 @@ export async function runSecurityInspectionPipeline(
   // 5. Malware & Antivirus Scan
   const malware = await scanForMalware(buffer, options);
   if (!malware.scannerAvailable) {
-    // Fail-closed
+    // Fail-closed. "Unavailable" = no real scanner could be used; "scan failed" = a scan was attempted and did not complete.
+    const unavailable = malware.outcome === 'unavailable';
     const report: FullSecurityReport = {
       fileId,
-      status: 'SCAN_FAILED',
+      status: unavailable ? 'UNAVAILABLE' : 'SCAN_FAILED',
       statusMessage: malware.details[0] || 'Mandatory malware inspection failed.',
       metadata,
       authenticity,
@@ -313,7 +317,10 @@ export async function runSecurityInspectionPipeline(
   const report: FullSecurityReport = {
     fileId,
     status: 'CLEAN_NO_KNOWN_THREATS',
-    statusMessage: 'All mandatory security checks passed. No known threats detected.',
+    statusMessage:
+      malware.genuine === false
+        ? 'DEMO SCANNER ONLY: no genuine antivirus scan was performed. The other security checks passed. (Local development / tests.)'
+        : 'All mandatory security checks passed. No known threats detected.',
     metadata,
     authenticity,
     structure,

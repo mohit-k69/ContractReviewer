@@ -1,0 +1,76 @@
+# Cloud Run multi-container service: the scanning API (ingress) plus a private ClamAV sidecar.
+#
+#   Internet --HTTPS--> scanner-api (:8080) --localhost:3310--> clamav (sidecar)
+#
+# Only the ingress container's port is reachable from outside. The sidecar declares no `ports`, so ClamAV's TCP port
+# 3310 is never routed to the internet; the two containers share a network namespace and talk over localhost.
+#
+# Replace the REGION / PROJECT_ID / REPO / TAG placeholders, then:
+#   gcloud run services replace service.yaml --region REGION
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: contract-scanner
+  annotations:
+    run.googleapis.com/ingress: all          # reachable over HTTPS; every /scan call must carry the bearer token
+spec:
+  template:
+    metadata:
+      annotations:
+        # The scanning API starts only after ClamAV passes its startup probe (signatures loaded).
+        run.googleapis.com/container-dependencies: '{"scanner-api":["clamav"]}'
+        # ClamAV refreshes signatures in the background, so keep CPU allocated and keep one instance warm
+        # (loading signatures takes a while; avoids a cold start on the first upload).
+        run.googleapis.com/cpu-throttling: "false"
+        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/maxScale: "5"
+    spec:
+      containerConcurrency: 4
+      timeoutSeconds: 60
+      containers:
+        - name: scanner-api
+          image: REGION-docker.pkg.dev/PROJECT_ID/REPO/contract-scanner:TAG
+          ports:
+            - containerPort: 8080
+          env:
+            - name: SCAN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: contract-scanner-token   # Secret Manager secret holding the shared bearer token
+                  key: latest
+            - name: CLAMD_HOST
+              value: "127.0.0.1"
+            - name: CLAMD_PORT
+              value: "3310"
+            - name: MAX_UPLOAD_BYTES
+              value: "20971520"                  # 20 MB, the same limit as the application
+          resources:
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          # Not routed any traffic until ClamAV answers PING.
+          startupProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            periodSeconds: 30
+        - name: clamav
+          image: clamav/clamav:1.4
+          # No `ports`: ClamAV is reachable only on localhost from scanner-api.
+          resources:
+            limits:
+              cpu: "2"
+              memory: 4Gi                        # ClamAV loads the whole signature database into memory
+          startupProbe:
+            tcpSocket:
+              port: 3310
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 60                 # up to 10 minutes for the first signature load

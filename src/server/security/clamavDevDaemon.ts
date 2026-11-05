@@ -1,9 +1,13 @@
 import net from 'node:net';
+import { registerDemoEndpoint, unregisterDemoEndpoint } from './scannerConfig';
 
 /**
- * Embedded ClamAV protocol service for development / preview environments.
- * Speaks the standard ClamAV zINSTREAM protocol over TCP sockets, accurately detecting
- * EICAR and malicious payloads while providing a real socket endpoint for verification.
+ * Embedded DEMO scanner for local development and automated tests ONLY.
+ *
+ * It speaks the ClamAV zINSTREAM protocol so the rest of the pipeline can be exercised, but it is NOT antivirus:
+ * it recognises two test strings and answers "OK" for everything else. Every endpoint it opens is registered as a
+ * demo endpoint, so the scanner reports it as non-genuine, and it is refused outright on Vercel and in production
+ * (see scannerConfig.ts). It must never be started there.
  */
 export async function startClamAvDevDaemon(): Promise<{ host: string; port: number; close: () => Promise<void> }> {
   return new Promise((resolve) => {
@@ -33,10 +37,14 @@ export async function startClamAvDevDaemon(): Promise<{ host: string; port: numb
 
     server.listen(0, '127.0.0.1', () => {
       const addr = server.address() as net.AddressInfo;
+      registerDemoEndpoint('127.0.0.1', addr.port);
       resolve({
         host: '127.0.0.1',
         port: addr.port,
-        close: () => new Promise((res) => server.close(() => res())),
+        close: () => {
+          unregisterDemoEndpoint('127.0.0.1', addr.port);
+          return new Promise((res) => server.close(() => res()));
+        },
       });
     });
   });

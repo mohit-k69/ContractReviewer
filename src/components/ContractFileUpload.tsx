@@ -27,6 +27,7 @@ import { NormalizedDocument } from '../server/normalization/types';
 import { ContractUnderstandingResult } from '../server/understanding/types';
 import { ContractRiskReport } from '../server/risk/types';
 import { UploadAnalysis } from '../server/analysisPipeline';
+import { parseUploadResponse, verdictOf } from '../utils/securityVerdict';
 
 export interface UploadedContractFile {
   file: File;
@@ -147,22 +148,36 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
         return;
       }
 
-      const payload: FullSecurityReport & { analysis?: UploadAnalysis } = await res.json();
-      const { analysis, ...report } = payload;
-      const securityReport = report as FullSecurityReport;
+      let body: unknown = null;
+      try {
+        body = await res.json();
+      } catch {
+        body = null; // not JSON (for example a platform error page)
+      }
+
+      // The response is validated before anything is shown or used. A body that is not a well-formed security
+      // report becomes an explicit error; an unscanned file is never treated as clean.
+      const { report: securityReport, verdict } = parseUploadResponse(res.status, body);
+      const analysis = securityReport ? (body as { analysis?: UploadAnalysis }).analysis : undefined;
 
       setIsScanning(false);
+
+      if (!securityReport) {
+        onFileSelect({ ...initialFileData, isScanning: false });
+        setErrorMessage(`${verdict.title}. ${verdict.message}`);
+        return;
+      }
+
       const scanned: UploadedContractFile = {
         ...initialFileData,
         securityReport,
         isScanning: false,
       };
 
-      if (!securityReport.eligibleForContractProcessing) {
+      if (!verdict.processable || !securityReport.eligibleForContractProcessing) {
+        // Blocked, failed or unavailable: nothing is extracted or analysed.
         onFileSelect(scanned);
-        setErrorMessage(
-          securityReport.statusMessage || `Security inspection decision: ${securityReport.status}`
-        );
+        setErrorMessage(`${verdict.title}. ${verdict.message}`);
       } else if (analysis) {
         onFileSelect({
           ...scanned,
@@ -410,12 +425,12 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
   };
 
   const report = selectedFile?.securityReport;
-  const isClean = report?.status === 'CLEAN_NO_KNOWN_THREATS';
-  const hasThreat =
-    report?.status === 'THREAT_DETECTED' ||
-    report?.status === 'REJECTED' ||
-    report?.status === 'SUSPICIOUS' ||
-    report?.status === 'SCAN_FAILED';
+  const verdict = report ? verdictOf(report) : null;
+  // Only a genuine antivirus pass shows as "clean"; the dev-only demo scanner is shown separately.
+  const isClean = verdict?.kind === 'clean';
+  const isDemo = verdict?.kind === 'demo';
+  const hasThreat = !!verdict && !verdict.processable;
+  const canProcess = !!verdict?.processable;
 
   return (
     <div className="flex flex-col gap-2 w-full">
@@ -440,6 +455,8 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
                     ? 'bg-blue-50 text-blue-600 animate-pulse'
                     : isClean
                     ? 'bg-emerald-50 text-emerald-600'
+                    : isDemo || verdict?.kind === 'unavailable'
+                    ? 'bg-amber-50 text-amber-600'
                     : hasThreat
                     ? 'bg-rose-50 text-rose-600'
                     : 'bg-blue-50 text-blue-600'
@@ -449,6 +466,8 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
                   <Loader2 className="w-4 h-4 animate-spin" />
                 ) : isClean ? (
                   <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                ) : isDemo || verdict?.kind === 'unavailable' ? (
+                  <AlertTriangle className="w-4 h-4 text-amber-600" />
                 ) : hasThreat ? (
                   <ShieldAlert className="w-4 h-4 text-rose-600" />
                 ) : (
@@ -492,7 +511,7 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
                 <div className="flex items-center justify-between">
                   <span className="text-[11px] text-emerald-700 font-medium flex items-center gap-1">
                     <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                    Clean (No known threats)
+                    {verdict?.title}
                   </span>
                   <button
                     type="button"
@@ -513,12 +532,27 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
               </div>
             )}
 
+            {!isScanning && isDemo && (
+              <div className="flex flex-col gap-1">
+                <span className="text-[11px] text-amber-700 font-semibold flex items-center gap-1">
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
+                  {verdict?.title}
+                </span>
+                <span className="text-[10px] text-amber-700 leading-tight">{verdict?.message}</span>
+              </div>
+            )}
+
             {!isScanning && hasThreat && (
               <div className="flex flex-col gap-1">
                 <div className="flex items-center justify-between">
-                  <span className="text-[11px] text-rose-700 font-semibold flex items-center gap-1">
-                    <ShieldAlert className="w-3.5 h-3.5 text-rose-600" />
-                    {report?.status}
+                  <span
+                    className={`text-[11px] font-semibold flex items-center gap-1 ${
+                      verdict?.kind === 'unavailable' ? 'text-amber-700' : 'text-rose-700'
+                    }`}
+                    role="alert"
+                  >
+                    <ShieldAlert className={`w-3.5 h-3.5 ${verdict?.kind === 'unavailable' ? 'text-amber-600' : 'text-rose-600'}`} />
+                    {verdict?.title}
                   </span>
                   <button
                     type="button"
@@ -533,8 +567,8 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
                     )}
                   </button>
                 </div>
-                <span className="text-[10px] text-rose-600 leading-tight">
-                  {report?.statusMessage}
+                <span className={`text-[10px] leading-tight ${verdict?.kind === 'unavailable' ? 'text-amber-700' : 'text-rose-600'}`}>
+                  {verdict?.message}
                 </span>
               </div>
             )}
@@ -562,8 +596,24 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
                 </div>
                 <div className="flex items-center justify-between">
                   <span>Malware Scanner:</span>
-                  <span className={report.malware.passed ? 'text-emerald-600 font-medium' : 'text-rose-600 font-semibold'}>
-                    {report.malware.passed ? 'Clean' : 'Threat Found'}
+                  <span
+                    className={
+                      verdict?.kind === 'clean'
+                        ? 'text-emerald-600 font-medium'
+                        : verdict?.kind === 'demo' || verdict?.kind === 'unavailable'
+                        ? 'text-amber-600 font-semibold'
+                        : 'text-rose-600 font-semibold'
+                    }
+                  >
+                    {report.malware.outcome === 'unavailable'
+                      ? 'Unavailable (not scanned)'
+                      : report.malware.outcome === 'error'
+                      ? 'Scan failed (not cleared)'
+                      : report.malware.outcome === 'threat' || !report.malware.passed
+                      ? 'Threat Found'
+                      : report.malware.genuine === true
+                      ? `Clean (${report.malware.engine})`
+                      : 'Demo scanner — not antivirus'}
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
@@ -588,7 +638,7 @@ export const ContractFileUpload: React.FC<ContractFileUploadProps> = ({
         </div>
 
         {/* Phase 2A Review Trigger & Extraction Result */}
-        {isClean && report?.eligibleForContractProcessing && (
+        {canProcess && report?.eligibleForContractProcessing && (
           <div className="flex flex-col gap-2 mt-1">
             {!selectedFile.extractionResult && (
               <button

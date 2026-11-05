@@ -8,6 +8,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 async function startServer() {
+  // `npm run dev` is an explicit local-development run: it opts in to the demo scanner. Never in production.
+  if (process.env.npm_lifecycle_event === 'dev' && process.env.NODE_ENV !== 'production') {
+    process.env.ALLOW_DEMO_SCANNER ??= '1';
+  }
   await initServerRuntime();
 
   const app = createApp();

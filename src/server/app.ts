@@ -22,8 +22,9 @@ import { understandContractDocument, getCachedUnderstanding } from './understand
 import { generateRiskReport, getCachedRiskReport } from './risk/riskService';
 import { analyzeUploadedContract } from './analysisPipeline';
 import { startClamAvDevDaemon } from './security/clamavDevDaemon';
+import { demoScannerAllowed, scannerMode } from './security/scannerConfig';
+import { probeScannerService } from './security/clamavServiceClient';
 
-let embeddedClamAv = false;
 let runtimeReady: Promise<void> | null = null;
 
 /**
@@ -42,13 +43,17 @@ export function initServerRuntime(): Promise<void> {
         `[QuarantineReconciliation] Restored: ${reconciliation.restored}, Purged expired: ${reconciliation.purged}, Failed: ${reconciliation.failed}`
       );
 
-      // Initialize ClamAV socket daemon for environment if unconfigured
-      if (!process.env.CLAMAV_HOST) {
-        const clamDaemon = await startClamAvDevDaemon();
-        process.env.CLAMAV_HOST = clamDaemon.host;
-        process.env.CLAMAV_PORT = clamDaemon.port.toString();
-        embeddedClamAv = true;
-        console.log(`[ClamAV Daemon] Initialized socket antivirus service on ${clamDaemon.host}:${clamDaemon.port}`);
+      // The embedded demo scanner is NOT antivirus. It starts only when no real scanner is configured AND it was
+      // explicitly enabled (ALLOW_DEMO_SCANNER=1) outside Vercel/production. Otherwise uploads report UNAVAILABLE.
+      if (!process.env.CLAMAV_SCAN_URL && !process.env.CLAMAV_HOST) {
+        if (demoScannerAllowed()) {
+          const clamDaemon = await startClamAvDevDaemon();
+          process.env.CLAMAV_HOST = clamDaemon.host;
+          process.env.CLAMAV_PORT = clamDaemon.port.toString();
+          console.warn(`[ClamAV] DEMO scanner enabled on ${clamDaemon.host}:${clamDaemon.port}. This is not antivirus; local development only.`);
+        } else {
+          console.warn('[ClamAV] No antivirus scanner configured (CLAMAV_SCAN_URL). Uploads will be reported as UNAVAILABLE and will not be analysed.');
+        }
       }
     })().catch((err) => {
       runtimeReady = null; // allow a retry on the next request
@@ -79,13 +84,24 @@ export function createApp() {
   });
 
   // Deployment health check (no authentication, no secrets). Lets a deployment prove the backend is reachable.
-  app.get('/api/health', (_req, res) => {
+  app.get('/api/health', async (req, res) => {
+    const mode = scannerMode();
+    const antivirus: Record<string, unknown> = {
+      mode,
+      configured: mode !== 'none',
+      // Only a real ClamAV (service or daemon) counts. The demo scanner and "none" never do.
+      genuine: mode === 'clamav-service' || mode === 'clamav-tcp',
+    };
+    // ?probe=1 additionally asks the scanning service whether ClamAV is ready (no document is sent).
+    if (req.query.probe === '1' && mode === 'clamav-service') {
+      Object.assign(antivirus, { ready: (await probeScannerService(process.env.CLAMAV_SCAN_URL!)).ready });
+    }
     res.json({
       ok: true,
       runtime: process.env.VERCEL ? 'vercel-serverless' : 'node-server',
       geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
       sessionSecretConfigured: Boolean(process.env.SESSION_SECRET),
-      antivirus: process.env.CLAMAV_HOST && !embeddedClamAv ? 'external-clamav' : 'embedded-dev-scanner',
+      antivirus,
       routes: ['/api/auth/session', '/api/contracts/upload', '/api/contracts/:id/{security-status,extract,normalize,understand,risk-report}'],
     });
   });

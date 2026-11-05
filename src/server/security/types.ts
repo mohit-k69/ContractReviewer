@@ -6,7 +6,9 @@ export type SecurityStatus =
   | 'SUSPICIOUS'
   | 'THREAT_DETECTED'
   | 'REJECTED'
-  | 'SCAN_FAILED';
+  | 'SCAN_FAILED'
+  /** No real antivirus is configured or reachable, so the document was NOT scanned (fail-closed) */
+  | 'UNAVAILABLE';
 
 export interface FileMetadata {
   fileId: string;
@@ -35,6 +37,13 @@ export interface MalwareScanResult {
   threatsFound: string[];
   scannerAvailable: boolean;
   details: string[];
+  /** How the scan ended. Only 'clean' with `genuine: true` is a real antivirus clean verdict. */
+  outcome?: 'clean' | 'threat' | 'error' | 'unavailable';
+  /** Which kind of scanner produced the result */
+  scanner?: 'clamav-service' | 'clamav-tcp' | 'demo' | 'none';
+  /** True only when a real ClamAV engine completed the scan. A demo scanner is never genuine. */
+  genuine?: boolean;
+  engineVersion?: string;
 }
 
 export interface ActiveContentInspectionResult {

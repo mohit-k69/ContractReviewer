@@ -696,6 +696,7 @@ test.describe('Phase 3 — end-to-end through the existing pipeline', () => {
 test.describe('Phase 3 — HTTP API (same Express app used by the server and by Vercel)', () => {
   test('25. Health, authentication, upload, risk report, caching and ownership over real HTTP', async () => {
     delete process.env.GEMINI_API_KEY;
+    process.env.ALLOW_DEMO_SCANNER = '1'; // the demo scanner must be enabled explicitly, and is for tests only
     const daemon = await startClamAvDevDaemon();
     process.env.CLAMAV_HOST = daemon.host;
     process.env.CLAMAV_PORT = String(daemon.port);
@@ -770,6 +771,7 @@ test.describe('Phase 3 — HTTP API (same Express app used by the server and by 
 
   test('26. Single-request analysis (?analyze=1) returns every stage and still blocks malware', async () => {
     delete process.env.GEMINI_API_KEY;
+    process.env.ALLOW_DEMO_SCANNER = '1'; // the demo scanner must be enabled explicitly, and is for tests only
     const daemon = await startClamAvDevDaemon();
     process.env.CLAMAV_HOST = daemon.host;
     process.env.CLAMAV_PORT = String(daemon.port);

@@ -560,6 +560,7 @@ test.describe('Decision report: nothing is invented', () => {
 test.describe('Decision report: pipeline integration', () => {
   test('is built inside the single-request analysis and returned with the other results', async () => {
     delete process.env.GEMINI_API_KEY;
+    process.env.ALLOW_DEMO_SCANNER = '1'; // the demo scanner must be enabled explicitly, and is for tests only
     const daemon = await startClamAvDevDaemon();
     process.env.CLAMAV_HOST = daemon.host;
     process.env.CLAMAV_PORT = String(daemon.port);

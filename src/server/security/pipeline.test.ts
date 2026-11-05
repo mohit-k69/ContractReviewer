@@ -92,14 +92,17 @@ async function startMockClamAVServer(behavior: 'clean' | 'threat' | 'error' | 't
   });
 }
 
-test('1. Fails closed (SCAN_FAILED) when ClamAV is not configured', async () => {
+test('1. Fails closed (UNAVAILABLE) when no antivirus scanner is configured', async () => {
   const textBuf = Buffer.from('Independent Contractor Agreement\nSection 1. Terms.');
-  // No clamavHost provided and process.env.CLAMAV_HOST undefined
+  // No clamavHost / scan URL provided and no CLAMAV_* environment variables
   const report = await runSecurityInspectionPipeline(textBuf, 'contract.txt', 'text/plain', 'sess-1');
 
-  assert.equal(report.status, 'SCAN_FAILED');
+  assert.equal(report.status, 'UNAVAILABLE');
   assert.equal(report.eligibleForContractProcessing, false);
-  assert.match(report.statusMessage, /Mandatory external antivirus scanner \(ClamAV\) is not configured/);
+  assert.equal(report.malware.scannerAvailable, false);
+  assert.equal(report.malware.outcome, 'unavailable');
+  assert.equal(report.malware.genuine, false);
+  assert.match(report.statusMessage, /Security scanning is unavailable.*not been analysed/);
 });
 
 test('2. Fails closed (SCAN_FAILED) when ClamAV scanner connection times out or fails', async () => {

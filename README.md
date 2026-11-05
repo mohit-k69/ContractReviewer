@@ -58,7 +58,9 @@ paste it, or upload it.
 | `SESSION_SECRET` | **production** | Signs the HttpOnly session cookie. Any long random string; must be identical across instances. |
 | `GEMINI_API_KEY` | optional | Enables Gemini for the understanding stage. Without it the deterministic engine is used. |
 | `GEMINI_CONTRACT_MODEL` | optional | Overrides the default Gemini model. |
-| `CLAMAV_HOST` / `CLAMAV_PORT` | optional | Use a real ClamAV daemon. Otherwise an embedded ClamAV-protocol scanner (EICAR/known test signatures only) is used – **fine for a demo, not real antivirus**. |
+| `CLAMAV_SCAN_URL` / `CLAMAV_SCAN_TOKEN` | **for any real deployment** | HTTPS ClamAV scanning service ([`scanner-service/`](scanner-service/README.md), Google Cloud Run). Server-side only. Without a real scanner, uploads return `UNAVAILABLE` and are **not analysed**. |
+| `CLAMAV_HOST` / `CLAMAV_PORT` | optional | A real ClamAV daemon over TCP (self-hosted alternative). |
+| `ALLOW_DEMO_SCANNER` | local only | Enables the embedded demo scanner (**not antivirus**). Refused on Vercel and in production. `npm run dev` sets it for you. |
 
 ## API
 
@@ -92,7 +94,8 @@ Steps:
 1. Import the repo in Vercel. Leave the detected settings as they are: `vercel.json` only overrides the build command
    (`npm run build:vercel`). Do not add `framework`/`installCommand` overrides to `vercel.json`; a project with the Vite
    preset rejected them.
-2. Set **`SESSION_SECRET`** (required) and, optionally, **`GEMINI_API_KEY`** in the project's environment variables.
+2. Set **`SESSION_SECRET`** (required), **`CLAMAV_SCAN_URL`** and **`CLAMAV_SCAN_TOKEN`** (required for uploads to be scanned and
+   analysed; see [`scanner-service/`](scanner-service/README.md)) and, optionally, **`GEMINI_API_KEY`** in the project's environment variables.
 3. Deploy, then open `https://<your-deployment>/api/health`. It must return `{"ok":true,"runtime":"vercel-serverless",...}`.
    If `SESSION_SECRET` is missing it returns a JSON `503` that says so, instead of an opaque crash.
 
@@ -103,7 +106,7 @@ Serverless limits to know about:
 * **State is per function instance** (in-memory caches and `/tmp` quarantine). The UI therefore uses
   `upload?analyze=1`, which runs the whole workflow inside a single request. The step-by-step endpoints work on
   any single long-lived server but may return 403/404 on serverless if consecutive requests hit different instances.
-* The embedded scanner is a demo scanner (see above). Use a real ClamAV (`CLAMAV_HOST`) for production use.
+* There is no antivirus unless you deploy the scanning service (`scanner-service/`) and set `CLAMAV_SCAN_URL` / `CLAMAV_SCAN_TOKEN`. Until then every upload reports **Security scanning is unavailable** and nothing is analysed. Check `GET /api/health?probe=1`.
 * Quarantined files are kept in the instance's `/tmp` for at most 2 hours.
 
 Alternatively run `npm start` on any Node host (`NODE_ENV=production`, `SESSION_SECRET` set) after `npm run build`; it

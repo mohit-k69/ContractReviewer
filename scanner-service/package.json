@@ -1,0 +1,12 @@
+{
+  "name": "contract-scanner-service",
+  "private": true,
+  "version": "1.0.0",
+  "description": "HTTPS antivirus scanning API for ContractReviewer. Talks to a private ClamAV daemon on localhost.",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test test/*.test.mjs"
+  }
+}
